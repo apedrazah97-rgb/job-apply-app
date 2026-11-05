@@ -67,9 +67,25 @@ interface SavedGoal {
   language: string;
   analysis: AnalysisResult;
   learningPlan?: LearningPlan;
+  completedTasks?: string[]; // "p{i}_a{j}"
 }
 
-type AppView = 'landing' | 'login' | 'analyze' | 'profile' | 'goals';
+type AppStatus = 'applied' | 'screening' | 'interview' | 'offer' | 'rejected' | 'withdrawn';
+
+interface JobApplication {
+  id: string;
+  createdAt: string;
+  company: string;
+  position: string;
+  source: string;
+  status: AppStatus;
+  interviewDate?: string; // ISO date string
+  rejectionReason?: string;
+  notes?: string;
+  interviewQuestions?: string[];
+}
+
+type AppView = 'landing' | 'login' | 'analyze' | 'profile' | 'goals' | 'applications';
 type ResultTab = 'fit' | 'tips' | 'letter' | 'autofill' | 'plan';
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -78,6 +94,7 @@ const KEYS = {
   profiles: 'jaa_profiles',
   currentProfile: 'jaa_current_profile',
   goals: (id: string) => `jaa_goals_${id}`,
+  applications: (id: string) => `jaa_apps_${id}`,
 };
 
 function readStorage<T>(key: string, fallback: T): T {
@@ -92,6 +109,19 @@ function readStorage<T>(key: string, fallback: T): T {
 function writeStorage(key: string, value: unknown) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
+
+// ── Status config ─────────────────────────────────────────────────────────────
+
+const STATUS_CONFIG: Record<AppStatus, { label: string; color: string; bg: string; border: string }> = {
+  applied:   { label: 'Postulada',    color: '#6366f1', bg: '#eef2ff', border: '#c7d2fe' },
+  screening: { label: 'En revisión',  color: '#8b5cf6', bg: '#f5f3ff', border: '#ddd6fe' },
+  interview: { label: 'Entrevista',   color: '#0ea5e9', bg: '#f0f9ff', border: '#bae6fd' },
+  offer:     { label: 'Oferta',       color: '#10b981', bg: '#ecfdf5', border: '#a7f3d0' },
+  rejected:  { label: 'Rechazada',    color: '#ef4444', bg: '#fef2f2', border: '#fecaca' },
+  withdrawn: { label: 'Retirada',     color: '#94a3b8', bg: '#f8fafc', border: '#e2e8f0' },
+};
+
+const SOURCES = ['LinkedIn', 'Indeed', 'Computrabajo', 'OCC', 'Referido/a', 'Sitio de la empresa', 'Otro'];
 
 // ── Build CV text from profile ────────────────────────────────────────────────
 
@@ -200,6 +230,16 @@ function PriorityBadge({ p }: { p: 'alta' | 'media' | 'baja' }) {
   );
 }
 
+function StatusBadge({ status }: { status: AppStatus }) {
+  const c = STATUS_CONFIG[status];
+  return (
+    <span className="text-xs font-semibold px-2 py-0.5 rounded border"
+      style={{ color: c.color, background: c.bg, borderColor: c.border }}>
+      {c.label}
+    </span>
+  );
+}
+
 // ── CSV import helpers ────────────────────────────────────────────────────────
 
 const CSV_FIELD_MAP: Record<string, keyof Omit<UserProfile, 'id'>> = {
@@ -229,7 +269,6 @@ function parseKeyValueCSV(text: string): Partial<Omit<UserProfile, 'id'>> {
     if (commaIdx === -1) continue;
     const rawKey = line.slice(0, commaIdx).trim().toLowerCase();
     let val = line.slice(commaIdx + 1).trim();
-    // Strip CSV quotes and unescape ""
     if (val.startsWith('"')) {
       val = val.slice(1);
       if (val.endsWith('"')) val = val.slice(0, -1);
@@ -315,7 +354,6 @@ function ProfileForm({ initial, onSave, onCancel }: {
       } catch (err) {
         setImportMsg({ type: 'err', text: err instanceof Error ? err.message : 'Error al leer el CSV' });
       }
-      // Reset input so same file can be re-imported
       if (fileInputRef.current) fileInputRef.current.value = '';
     };
     reader.readAsText(file, 'UTF-8');
@@ -331,8 +369,6 @@ function ProfileForm({ initial, onSave, onCancel }: {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
-
-      {/* CSV import banner */}
       <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 space-y-2">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
@@ -397,7 +433,7 @@ function ProfileForm({ initial, onSave, onCancel }: {
         <label className="block text-sm font-medium text-slate-700">Experiencia laboral</label>
         <p className="text-xs text-slate-400">Puesto, empresa, descripción breve — un bloque por trabajo</p>
         <textarea rows={5} value={form.experience} onChange={set('experience')}
-          placeholder="QA & Compliance Lead — QBridge AI&#10;Liderazgo de procesos de QA para plataformas de IA en entornos regulados.&#10;&#10;PM SAP — Avant Santé Research Center&#10;Gestión de proyectos con ERP SAP en contexto de investigación clínica."
+          placeholder="QA &amp; Compliance Lead — QBridge AI&#10;Liderazgo de procesos de QA para plataformas de IA en entornos regulados.&#10;&#10;PM SAP — Avant Santé Research Center&#10;Gestión de proyectos con ERP SAP en contexto de investigación clínica."
           className={textareaClass} />
       </div>
 
@@ -424,14 +460,30 @@ function ProfileForm({ initial, onSave, onCancel }: {
   );
 }
 
-// ── Learning Plan display ─────────────────────────────────────────────────────
+// ── Learning Plan display (interactive checkboxes) ────────────────────────────
 
-function LearningPlanView({ plan }: { plan: LearningPlan }) {
+function LearningPlanView({
+  plan,
+  completedTasks,
+  onToggleTask,
+}: {
+  plan: LearningPlan;
+  completedTasks?: string[];
+  onToggleTask?: (key: string) => void;
+}) {
+  const done = new Set(completedTasks ?? []);
+  const totalActions = plan.phases.reduce((s, p) => s + p.actions.length, 0);
+  const doneActions = plan.phases.reduce((s, p, i) =>
+    s + p.actions.filter((_, j) => done.has(`p${i}_a${j}`)).length, 0);
+  const pct = totalActions > 0 ? Math.round((doneActions / totalActions) * 100) : 0;
+  const interactive = !!onToggleTask;
+
   return (
     <div className="space-y-6">
+      {/* Objective */}
       <div className="flex items-start gap-3 p-4 rounded-xl bg-indigo-50 border border-indigo-100">
         <span className="text-2xl">🎯</span>
-        <div>
+        <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-xs font-semibold text-indigo-500 uppercase tracking-wide">Duración estimada</span>
             <span className="text-sm font-bold text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded">{plan.timeline}</span>
@@ -440,33 +492,93 @@ function LearningPlanView({ plan }: { plan: LearningPlan }) {
         </div>
       </div>
 
+      {/* Overall progress (only in interactive/goals mode) */}
+      {interactive && totalActions > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-xs text-slate-500">
+            <span>Progreso general</span>
+            <span className="font-semibold text-slate-700">{doneActions} / {totalActions} tareas</span>
+          </div>
+          <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{
+                width: `${pct}%`,
+                background: pct === 100 ? '#10b981' : pct > 50 ? '#6366f1' : '#a5b4fc',
+              }}
+            />
+          </div>
+          <p className="text-xs text-right font-medium" style={{ color: pct === 100 ? '#10b981' : '#6366f1' }}>
+            {pct}% completado
+          </p>
+        </div>
+      )}
+
+      {/* Phases */}
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-slate-700">Fases del plan</h3>
-        {plan.phases.map((phase, i) => (
-          <div key={i} className="rounded-xl border border-slate-100 overflow-hidden">
-            <div className="flex items-center gap-3 px-4 py-3 bg-slate-50 border-b border-slate-100">
-              <span className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold shrink-0">
-                {i + 1}
-              </span>
-              <div>
-                <span className="text-sm font-semibold text-slate-800">{phase.name}</span>
-                <span className="ml-2 text-xs text-slate-400">{phase.duration}</span>
+        {plan.phases.map((phase, i) => {
+          const phaseTotal = phase.actions.length;
+          const phaseDone = phase.actions.filter((_, j) => done.has(`p${i}_a${j}`)).length;
+          const phasePct = phaseTotal > 0 ? Math.round((phaseDone / phaseTotal) * 100) : 0;
+
+          return (
+            <div key={i} className="rounded-xl border border-slate-100 overflow-hidden">
+              <div className="flex items-center gap-3 px-4 py-3 bg-slate-50 border-b border-slate-100">
+                <span className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold shrink-0">
+                  {i + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-semibold text-slate-800">{phase.name}</span>
+                  <span className="ml-2 text-xs text-slate-400">{phase.duration}</span>
+                </div>
+                {interactive && (
+                  <span className="text-xs font-medium text-slate-500 shrink-0">
+                    {phaseDone}/{phaseTotal}
+                    {phasePct === 100 && <span className="ml-1 text-emerald-500">✓</span>}
+                  </span>
+                )}
+              </div>
+              {/* Phase progress bar */}
+              {interactive && (
+                <div className="h-1 bg-slate-100">
+                  <div className="h-full bg-indigo-400 transition-all duration-300" style={{ width: `${phasePct}%` }} />
+                </div>
+              )}
+              <div className="px-4 py-3 space-y-2">
+                <p className="text-xs text-slate-500 italic">{phase.goal}</p>
+                <ul className="space-y-2">
+                  {phase.actions.map((a, j) => {
+                    const key = `p${i}_a${j}`;
+                    const checked = done.has(key);
+                    return (
+                      <li key={j} className="flex items-start gap-2 text-sm text-slate-700">
+                        {interactive ? (
+                          <button
+                            onClick={() => onToggleTask!(key)}
+                            className={`mt-0.5 w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-all ${
+                              checked
+                                ? 'bg-indigo-600 border-indigo-600 text-white'
+                                : 'border-slate-300 hover:border-indigo-400'
+                            }`}
+                          >
+                            {checked && <span className="text-[9px] font-bold">✓</span>}
+                          </button>
+                        ) : (
+                          <span className="text-indigo-400 mt-0.5 shrink-0">→</span>
+                        )}
+                        <span className={checked ? 'line-through text-slate-400' : ''}>{a}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
               </div>
             </div>
-            <div className="px-4 py-3 space-y-2">
-              <p className="text-xs text-slate-500 italic">{phase.goal}</p>
-              <ul className="space-y-1.5">
-                {phase.actions.map((a, j) => (
-                  <li key={j} className="flex items-start gap-2 text-sm text-slate-700">
-                    <span className="text-indigo-400 mt-0.5 shrink-0">→</span>{a}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
+      {/* Resources */}
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-slate-700">Recursos recomendados</h3>
         <div className="space-y-2">
@@ -482,6 +594,7 @@ function LearningPlanView({ plan }: { plan: LearningPlan }) {
         </div>
       </div>
 
+      {/* Quick wins */}
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-slate-700">⚡ Quick wins — empieza esta semana</h3>
         <ul className="space-y-2">
@@ -513,6 +626,17 @@ function GoalsView({ profileId, onBack }: { profileId: string; onBack: () => voi
     setGoals(updated);
     writeStorage(KEYS.goals(profileId), updated);
     if (expanded === id) setExpanded(null);
+  };
+
+  const toggleTask = (goalId: string, key: string) => {
+    const updated = goals.map(g => {
+      if (g.id !== goalId) return g;
+      const done = new Set(g.completedTasks ?? []);
+      if (done.has(key)) done.delete(key); else done.add(key);
+      return { ...g, completedTasks: Array.from(done) };
+    });
+    setGoals(updated);
+    writeStorage(KEYS.goals(profileId), updated);
   };
 
   const generatePlan = async (goal: SavedGoal) => {
@@ -569,63 +693,594 @@ function GoalsView({ profileId, onBack }: { profileId: string; onBack: () => voi
               {planError}
             </div>
           )}
-          {goals.map(goal => (
-            <div key={goal.id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-              <div
-                className="flex items-center gap-3 p-4 cursor-pointer hover:bg-slate-50 transition"
-                onClick={() => setExpanded(e => e === goal.id ? null : goal.id)}
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-slate-800 text-sm">{goal.position}</span>
-                    {goal.company && (
-                      <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded">{goal.company}</span>
-                    )}
-                    <span className="text-xs font-semibold px-2 py-0.5 rounded"
-                      style={{
-                        background: goal.analysis.fit_score >= 75 ? '#d1fae5' : goal.analysis.fit_score >= 50 ? '#fef3c7' : '#fee2e2',
-                        color: goal.analysis.fit_score >= 75 ? '#059669' : goal.analysis.fit_score >= 50 ? '#d97706' : '#dc2626',
-                      }}>
-                      {goal.analysis.fit_score}% fit
-                    </span>
-                    {goal.learningPlan && (
-                      <span className="text-xs text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">📋 Plan listo</span>
+          {goals.map(goal => {
+            const totalTasks = goal.learningPlan
+              ? goal.learningPlan.phases.reduce((s, p) => s + p.actions.length, 0)
+              : 0;
+            const doneTasks = totalTasks > 0
+              ? (goal.completedTasks?.length ?? 0)
+              : 0;
+            const pct = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
+
+            return (
+              <div key={goal.id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <div
+                  className="flex items-center gap-3 p-4 cursor-pointer hover:bg-slate-50 transition"
+                  onClick={() => setExpanded(e => e === goal.id ? null : goal.id)}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-slate-800 text-sm">{goal.position}</span>
+                      {goal.company && (
+                        <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded">{goal.company}</span>
+                      )}
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded"
+                        style={{
+                          background: goal.analysis.fit_score >= 75 ? '#d1fae5' : goal.analysis.fit_score >= 50 ? '#fef3c7' : '#fee2e2',
+                          color: goal.analysis.fit_score >= 75 ? '#059669' : goal.analysis.fit_score >= 50 ? '#d97706' : '#dc2626',
+                        }}>
+                        {goal.analysis.fit_score}% fit
+                      </span>
+                      {goal.learningPlan && (
+                        <span className="text-xs text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">📋 Plan listo</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {new Date(goal.savedAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' })}
+                    </p>
+                    {/* Progress bar in card header */}
+                    {totalTasks > 0 && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{
+                              width: `${pct}%`,
+                              background: pct === 100 ? '#10b981' : '#6366f1',
+                            }}
+                          />
+                        </div>
+                        <span className="text-xs font-medium text-slate-500 shrink-0">{pct}%</span>
+                      </div>
                     )}
                   </div>
-                  <p className="text-xs text-slate-400 mt-0.5">{new Date(goal.savedAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                  <button
+                    onClick={e => { e.stopPropagation(); deleteGoal(goal.id); }}
+                    className="text-slate-300 hover:text-red-400 transition shrink-0"
+                  >✕</button>
+                  <span className="text-slate-400 text-sm">{expanded === goal.id ? '▲' : '▼'}</span>
                 </div>
-                <button
-                  onClick={e => { e.stopPropagation(); deleteGoal(goal.id); }}
-                  className="text-slate-300 hover:text-red-400 transition shrink-0"
-                >✕</button>
-                <span className="text-slate-400 text-sm">{expanded === goal.id ? '▲' : '▼'}</span>
-              </div>
 
-              {expanded === goal.id && (
-                <div className="border-t border-slate-100 p-5 space-y-5">
-                  {!goal.learningPlan ? (
-                    <div className="text-center py-4 space-y-3">
-                      <p className="text-sm text-slate-500">
-                        Genera un plan de desarrollo personalizado para alcanzar esta meta.
-                      </p>
-                      <button
-                        onClick={() => generatePlan(goal)}
-                        disabled={generatingPlan === goal.id}
-                        className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white font-semibold px-5 py-2.5 rounded-xl text-sm transition-all"
-                      >
-                        {generatingPlan === goal.id ? '⏳ Generando plan…' : '✦ Generar plan de desarrollo'}
-                      </button>
-                      {generatingPlan === goal.id && <Spinner label="Creando tu plan personalizado…" />}
-                    </div>
-                  ) : (
-                    <LearningPlanView plan={goal.learningPlan} />
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
+                {expanded === goal.id && (
+                  <div className="border-t border-slate-100 p-5 space-y-5">
+                    {!goal.learningPlan ? (
+                      <div className="text-center py-4 space-y-3">
+                        <p className="text-sm text-slate-500">
+                          Genera un plan de desarrollo personalizado para alcanzar esta meta.
+                        </p>
+                        <button
+                          onClick={() => generatePlan(goal)}
+                          disabled={generatingPlan === goal.id}
+                          className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white font-semibold px-5 py-2.5 rounded-xl text-sm transition-all"
+                        >
+                          {generatingPlan === goal.id ? '⏳ Generando plan…' : '✦ Generar plan de desarrollo'}
+                        </button>
+                        {generatingPlan === goal.id && <Spinner label="Creando tu plan personalizado…" />}
+                      </div>
+                    ) : (
+                      <LearningPlanView
+                        plan={goal.learningPlan}
+                        completedTasks={goal.completedTasks}
+                        onToggleTask={(key) => toggleTask(goal.id, key)}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Application Tracker View ──────────────────────────────────────────────────
+
+type TrainingPrompt = { position: string; reason: string } | null;
+
+function ApplicationTrackerView({
+  profileId,
+  profileName,
+  onBack,
+  onAnalyze,
+}: {
+  profileId: string;
+  profileName: string;
+  onBack: () => void;
+  onAnalyze: (position?: string) => void;
+}) {
+  const [apps, setApps] = useState<JobApplication[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [trainingPrompt, setTrainingPrompt] = useState<TrainingPrompt>(null);
+  const [generatingQs, setGeneratingQs] = useState<string | null>(null);
+  const [expandedApp, setExpandedApp] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'list' | 'calendar'>('dashboard');
+
+  const emptyForm = {
+    company: '', position: '', source: 'LinkedIn',
+    status: 'applied' as AppStatus, interviewDate: '', rejectionReason: '', notes: '',
+  };
+  const [form, setForm] = useState(emptyForm);
+
+  useEffect(() => {
+    setApps(readStorage<JobApplication[]>(KEYS.applications(profileId), []));
+  }, [profileId]);
+
+  const saveApps = (updated: JobApplication[]) => {
+    setApps(updated);
+    writeStorage(KEYS.applications(profileId), updated);
+  };
+
+  const handleSave = () => {
+    if (!form.position.trim()) return;
+    if (editingId) {
+      saveApps(apps.map(a => a.id === editingId
+        ? { ...a, ...form, interviewDate: form.interviewDate || undefined, rejectionReason: form.rejectionReason || undefined, notes: form.notes || undefined }
+        : a
+      ));
+    } else {
+      const newApp: JobApplication = {
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        company: form.company,
+        position: form.position,
+        source: form.source,
+        status: form.status,
+        interviewDate: form.interviewDate || undefined,
+        rejectionReason: form.rejectionReason || undefined,
+        notes: form.notes || undefined,
+      };
+      saveApps([newApp, ...apps]);
+    }
+    if (form.status === 'rejected' && form.rejectionReason.trim()) {
+      setTrainingPrompt({ position: form.position, reason: form.rejectionReason });
+    }
+    setForm(emptyForm);
+    setShowForm(false);
+    setEditingId(null);
+  };
+
+  const startEdit = (app: JobApplication) => {
+    setForm({
+      company: app.company,
+      position: app.position,
+      source: app.source,
+      status: app.status,
+      interviewDate: app.interviewDate ?? '',
+      rejectionReason: app.rejectionReason ?? '',
+      notes: app.notes ?? '',
+    });
+    setEditingId(app.id);
+    setShowForm(true);
+  };
+
+  const deleteApp = (id: string) => {
+    saveApps(apps.filter(a => a.id !== id));
+    if (expandedApp === id) setExpandedApp(null);
+  };
+
+  const generateInterviewQs = async (app: JobApplication) => {
+    setGeneratingQs(app.id);
+    try {
+      const res = await fetch('/api/interview-questions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ position: app.position, company: app.company }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      saveApps(apps.map(a => a.id === app.id ? { ...a, interviewQuestions: data.questions } : a));
+    } catch {
+      // silently fail — user can retry
+    } finally {
+      setGeneratingQs(null);
+    }
+  };
+
+  // ── Dashboard stats ──
+  const total = apps.length;
+  const responded = apps.filter(a => ['screening', 'interview', 'offer', 'rejected'].includes(a.status)).length;
+  const interviews = apps.filter(a => ['interview', 'offer'].includes(a.status)).length;
+  const offers = apps.filter(a => a.status === 'offer').length;
+  const responseRate = total > 0 ? Math.round((responded / total) * 100) : 0;
+
+  const byStatus: Record<string, number> = {};
+  const bySource: Record<string, number> = {};
+  for (const a of apps) {
+    byStatus[a.status] = (byStatus[a.status] ?? 0) + 1;
+    bySource[a.source] = (bySource[a.source] ?? 0) + 1;
+  }
+
+  // Calendar: apps with interview date
+  const upcoming = apps
+    .filter(a => a.interviewDate)
+    .sort((a, b) => new Date(a.interviewDate!).getTime() - new Date(b.interviewDate!).getTime());
+
+  const inputClass = "w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 transition placeholder:text-slate-400";
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <button onClick={onBack} className="text-slate-400 hover:text-slate-600 transition text-sm">← Volver</button>
+          <h2 className="text-lg font-bold text-slate-900">Mis postulaciones</h2>
+        </div>
+        <button
+          onClick={() => { setForm(emptyForm); setEditingId(null); setShowForm(s => !s); }}
+          className="text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded-lg transition"
+        >
+          + Registrar
+        </button>
+      </div>
+
+      {/* Training prompt banner */}
+      {trainingPrompt && (
+        <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 space-y-2">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-amber-800">¿Quieres prepararte para esta área?</p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Motivo de rechazo: <em>{trainingPrompt.reason}</em>
+              </p>
+            </div>
+            <button onClick={() => setTrainingPrompt(null)} className="text-amber-400 hover:text-amber-600 text-xs shrink-0">✕</button>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={() => { setTrainingPrompt(null); onAnalyze(trainingPrompt.position); }}
+              className="text-xs font-semibold text-amber-700 border border-amber-300 bg-white hover:bg-amber-50 px-3 py-1.5 rounded-lg transition"
+            >
+              Analizar vacante similar →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Add / Edit Form */}
+      {showForm && (
+        <div className="bg-white rounded-2xl border border-indigo-200 shadow-sm p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-slate-800">{editingId ? 'Editar postulación' : 'Nueva postulación'}</h3>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-600">Puesto *</label>
+              <input value={form.position} onChange={e => setForm(f => ({ ...f, position: e.target.value }))}
+                placeholder="Data Analyst, QA Tester…" className={inputClass} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-600">Empresa</label>
+              <input value={form.company} onChange={e => setForm(f => ({ ...f, company: e.target.value }))}
+                placeholder="Nombre de la empresa" className={inputClass} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-600">¿Dónde la encontraste?</label>
+              <select value={form.source} onChange={e => setForm(f => ({ ...f, source: e.target.value }))}
+                className={inputClass}>
+                {SOURCES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-600">Estado</label>
+              <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value as AppStatus }))}
+                className={inputClass}>
+                {(Object.entries(STATUS_CONFIG) as [AppStatus, typeof STATUS_CONFIG[AppStatus]][]).map(([k, v]) => (
+                  <option key={k} value={k}>{v.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Interview date — only when status = interview */}
+          {form.status === 'interview' && (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-600">Fecha de entrevista</label>
+              <input type="datetime-local" value={form.interviewDate}
+                onChange={e => setForm(f => ({ ...f, interviewDate: e.target.value }))}
+                className={inputClass} />
+            </div>
+          )}
+
+          {/* Rejection reason — only when status = rejected */}
+          {form.status === 'rejected' && (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-600">¿Por qué te rechazaron? <span className="text-slate-400">(opcional)</span></label>
+              <input value={form.rejectionReason}
+                onChange={e => setForm(f => ({ ...f, rejectionReason: e.target.value }))}
+                placeholder="Ej: faltaba experiencia en Python, buscaban perfil senior…"
+                className={inputClass} />
+            </div>
+          )}
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-600">Notas <span className="text-slate-400">(opcional)</span></label>
+            <input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+              placeholder="Cualquier detalle adicional" className={inputClass} />
+          </div>
+
+          <div className="flex gap-2">
+            <button onClick={handleSave} disabled={!form.position.trim()}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white font-semibold py-2.5 rounded-xl text-sm transition-all">
+              {editingId ? 'Guardar cambios' : 'Registrar postulación'}
+            </button>
+            <button onClick={() => { setShowForm(false); setEditingId(null); setForm(emptyForm); }}
+              className="px-4 border border-slate-200 text-slate-500 hover:bg-slate-50 rounded-xl text-sm transition-all">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tabs: Dashboard / Lista / Calendario */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="border-b border-slate-200 flex">
+          {(['dashboard', 'list', 'calendar'] as const).map(t => (
+            <button key={t} onClick={() => setActiveTab(t)}
+              className={`px-4 py-3 text-sm font-medium transition-all ${activeTab === t ? 'tab-active' : 'tab-inactive'}`}>
+              {t === 'dashboard' ? '📊 Dashboard' : t === 'list' ? '📋 Lista' : '📅 Calendario'}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-5">
+
+          {/* ── Dashboard ── */}
+          {activeTab === 'dashboard' && (
+            <div className="space-y-6">
+              {total === 0 ? (
+                <div className="text-center py-8 space-y-2">
+                  <p className="text-3xl">📋</p>
+                  <p className="text-sm text-slate-500">Registra tu primera postulación para ver el dashboard</p>
+                </div>
+              ) : (
+                <>
+                  {/* Stat cards */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {[
+                      { label: 'Total', value: total, color: '#6366f1', bg: '#eef2ff' },
+                      { label: 'Tasa de respuesta', value: `${responseRate}%`, color: '#8b5cf6', bg: '#f5f3ff' },
+                      { label: 'Entrevistas', value: interviews, color: '#0ea5e9', bg: '#f0f9ff' },
+                      { label: 'Ofertas', value: offers, color: '#10b981', bg: '#ecfdf5' },
+                    ].map(s => (
+                      <div key={s.label} className="rounded-xl p-4 text-center border"
+                        style={{ background: s.bg, borderColor: `${s.color}30` }}>
+                        <p className="text-2xl font-extrabold" style={{ color: s.color }}>{s.value}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{s.label}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* By status */}
+                  <div>
+                    <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Por estado</h3>
+                    <div className="space-y-2">
+                      {(Object.entries(byStatus) as [AppStatus, number][])
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([s, count]) => {
+                          const c = STATUS_CONFIG[s];
+                          const pct = total > 0 ? (count / total) * 100 : 0;
+                          return (
+                            <div key={s} className="flex items-center gap-3">
+                              <StatusBadge status={s} />
+                              <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                                <div className="h-full rounded-full transition-all duration-500"
+                                  style={{ width: `${pct}%`, background: c.color }} />
+                              </div>
+                              <span className="text-xs font-semibold text-slate-600 w-4 text-right">{count}</span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+
+                  {/* By source */}
+                  {Object.keys(bySource).length > 0 && (
+                    <div>
+                      <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">¿Dónde las encontré?</h3>
+                      <div className="space-y-2">
+                        {Object.entries(bySource)
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([src, count]) => {
+                            const pct = total > 0 ? (count / total) * 100 : 0;
+                            return (
+                              <div key={src} className="flex items-center gap-3">
+                                <span className="text-xs text-slate-600 w-24 truncate shrink-0">{src}</span>
+                                <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                                  <div className="h-full rounded-full bg-indigo-400 transition-all duration-500"
+                                    style={{ width: `${pct}%` }} />
+                                </div>
+                                <span className="text-xs font-semibold text-slate-600 w-4 text-right">{count}</span>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── Lista ── */}
+          {activeTab === 'list' && (
+            <div className="space-y-3">
+              {apps.length === 0 ? (
+                <div className="text-center py-8 space-y-2">
+                  <p className="text-3xl">📋</p>
+                  <p className="text-sm text-slate-500">Aún no tienes postulaciones registradas</p>
+                </div>
+              ) : (
+                apps.map(app => (
+                  <div key={app.id} className="rounded-xl border border-slate-100 overflow-hidden">
+                    <div
+                      className="flex items-center gap-3 p-3 cursor-pointer hover:bg-slate-50 transition"
+                      onClick={() => setExpandedApp(e => e === app.id ? null : app.id)}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-semibold text-slate-800">{app.position}</span>
+                          {app.company && <span className="text-xs text-slate-400">{app.company}</span>}
+                          <StatusBadge status={app.status} />
+                          {app.interviewDate && (
+                            <span className="text-xs text-sky-600 bg-sky-50 border border-sky-100 px-2 py-0.5 rounded">
+                              📅 {new Date(app.interviewDate).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {app.source} · {new Date(app.createdAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </p>
+                      </div>
+                      <button onClick={e => { e.stopPropagation(); startEdit(app); }}
+                        className="text-slate-300 hover:text-indigo-400 transition text-xs shrink-0">✏️</button>
+                      <button onClick={e => { e.stopPropagation(); deleteApp(app.id); }}
+                        className="text-slate-300 hover:text-red-400 transition shrink-0">✕</button>
+                      <span className="text-slate-400 text-sm">{expandedApp === app.id ? '▲' : '▼'}</span>
+                    </div>
+
+                    {expandedApp === app.id && (
+                      <div className="border-t border-slate-100 px-4 py-3 space-y-3 bg-slate-50">
+                        {app.rejectionReason && (
+                          <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-100">
+                            <span className="text-red-400 text-xs mt-0.5 shrink-0">⚠</span>
+                            <div>
+                              <p className="text-xs font-semibold text-red-700">Motivo de rechazo</p>
+                              <p className="text-xs text-red-600 mt-0.5">{app.rejectionReason}</p>
+                            </div>
+                            <button
+                              onClick={() => { setTrainingPrompt({ position: app.position, reason: app.rejectionReason! }); setExpandedApp(null); }}
+                              className="ml-auto text-xs font-semibold text-amber-600 border border-amber-200 bg-white hover:bg-amber-50 px-2 py-1 rounded-lg transition shrink-0"
+                            >
+                              Capacitarme →
+                            </button>
+                          </div>
+                        )}
+                        {app.notes && <p className="text-xs text-slate-500 italic">{app.notes}</p>}
+
+                        {/* Interview questions */}
+                        {app.status === 'interview' && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-semibold text-slate-600">Posibles preguntas de entrevista</p>
+                              {!app.interviewQuestions && (
+                                <button
+                                  onClick={() => generateInterviewQs(app)}
+                                  disabled={generatingQs === app.id}
+                                  className="text-xs font-semibold text-sky-600 border border-sky-200 bg-white hover:bg-sky-50 px-2.5 py-1 rounded-lg transition disabled:opacity-50"
+                                >
+                                  {generatingQs === app.id ? '⏳ Generando…' : '✦ Generar preguntas'}
+                                </button>
+                              )}
+                            </div>
+                            {generatingQs === app.id && <Spinner label="Generando preguntas…" />}
+                            {app.interviewQuestions && (
+                              <ul className="space-y-1.5">
+                                {app.interviewQuestions.map((q, i) => (
+                                  <li key={i} className="flex items-start gap-2 text-xs text-slate-700 p-2.5 rounded-lg bg-white border border-slate-100">
+                                    <span className="text-sky-400 font-bold shrink-0">{i + 1}.</span>{q}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* ── Calendario ── */}
+          {activeTab === 'calendar' && (
+            <div className="space-y-4">
+              {upcoming.length === 0 ? (
+                <div className="text-center py-8 space-y-2">
+                  <p className="text-3xl">📅</p>
+                  <p className="text-sm text-slate-500">No tienes entrevistas programadas</p>
+                  <p className="text-xs text-slate-400">Registra una postulación con estado "Entrevista" y agrega la fecha.</p>
+                </div>
+              ) : (
+                <>
+                  <p className="text-xs text-slate-500">Entrevistas próximas ordenadas por fecha</p>
+                  {upcoming.map(app => {
+                    const d = new Date(app.interviewDate!);
+                    const now = new Date();
+                    const diffMs = d.getTime() - now.getTime();
+                    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+                    const isPast = diffMs < 0;
+
+                    return (
+                      <div key={app.id} className={`rounded-xl border p-4 space-y-3 ${isPast ? 'bg-slate-50 border-slate-100 opacity-60' : 'bg-sky-50 border-sky-100'}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-800">{app.position}</p>
+                            {app.company && <p className="text-xs text-slate-500">{app.company}</p>}
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="text-sm font-bold text-sky-700">
+                              {d.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' })}
+                            </p>
+                            <p className="text-xs text-sky-500">
+                              {d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                            {!isPast && (
+                              <span className={`text-xs font-semibold mt-0.5 block ${diffDays <= 2 ? 'text-orange-500' : 'text-sky-500'}`}>
+                                {diffDays === 0 ? '¡Hoy!' : diffDays === 1 ? 'Mañana' : `En ${diffDays} días`}
+                              </span>
+                            )}
+                            {isPast && <span className="text-xs text-slate-400">Pasada</span>}
+                          </div>
+                        </div>
+
+                        {/* Interview questions section */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-semibold text-slate-600">Preguntas de preparación</p>
+                            {!app.interviewQuestions && (
+                              <button
+                                onClick={() => generateInterviewQs(app)}
+                                disabled={generatingQs === app.id}
+                                className="text-xs font-semibold text-sky-600 border border-sky-200 bg-white hover:bg-sky-50 px-2.5 py-1 rounded-lg transition disabled:opacity-50"
+                              >
+                                {generatingQs === app.id ? '⏳ Generando…' : '✦ Preparar entrevista'}
+                              </button>
+                            )}
+                          </div>
+                          {generatingQs === app.id && <Spinner label="Generando preguntas de entrevista…" />}
+                          {app.interviewQuestions && (
+                            <ul className="space-y-1.5">
+                              {app.interviewQuestions.map((q, i) => (
+                                <li key={i} className="flex items-start gap-2 text-xs text-slate-700 p-2.5 rounded-lg bg-white border border-sky-100">
+                                  <span className="text-sky-400 font-bold shrink-0">{i + 1}.</span>{q}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          )}
+
+        </div>
+      </div>
     </div>
   );
 }
@@ -646,22 +1301,18 @@ function LandingView({ profiles, onLogin, onRegister }: {
 }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white flex flex-col">
-
-      {/* Nav */}
       <nav className="flex items-center justify-between px-6 py-4 max-w-5xl mx-auto w-full">
         <div className="flex items-center gap-2">
           <span className="text-indigo-400 text-xl">✦</span>
           <span className="font-bold text-lg tracking-tight">Job Apply</span>
         </div>
         {profiles.length > 0 && (
-          <button onClick={onLogin}
-            className="text-sm font-medium text-slate-300 hover:text-white transition">
+          <button onClick={onLogin} className="text-sm font-medium text-slate-300 hover:text-white transition">
             Iniciar sesión →
           </button>
         )}
       </nav>
 
-      {/* Hero */}
       <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-16 space-y-8 max-w-3xl mx-auto w-full">
         <div className="inline-flex items-center gap-2 bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-semibold px-3 py-1.5 rounded-full">
           <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
@@ -680,7 +1331,6 @@ function LandingView({ profiles, onLogin, onRegister }: {
           </p>
         </div>
 
-        {/* CTAs */}
         <div className="flex flex-col items-center gap-3">
           <button onClick={onRegister}
             className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-8 py-3.5 rounded-xl text-sm transition-all shadow-lg shadow-indigo-900/40 hover:shadow-indigo-900/60 hover:-translate-y-0.5">
@@ -692,7 +1342,6 @@ function LandingView({ profiles, onLogin, onRegister }: {
           </button>
         </div>
 
-        {/* Features grid */}
         <div className="grid grid-cols-2 gap-4 w-full pt-4">
           {FEATURES.map(f => (
             <div key={f.title}
@@ -705,7 +1354,6 @@ function LandingView({ profiles, onLogin, onRegister }: {
         </div>
       </div>
 
-      {/* Footer */}
       <footer className="text-center py-5 text-xs text-slate-600">
         Los datos se guardan localmente en tu dispositivo · Sin servidores externos
       </footer>
@@ -728,7 +1376,6 @@ function LoginView({ profiles, onSelect, onNewProfile, onBack }: {
 }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 flex flex-col items-center justify-center px-6 py-16 space-y-8">
-
       <div className="text-center space-y-2">
         <button onClick={onBack} className="text-xs text-slate-500 hover:text-slate-300 transition mb-4 block mx-auto">
           ← Volver
@@ -739,7 +1386,7 @@ function LoginView({ profiles, onSelect, onNewProfile, onBack }: {
 
       <div className={`grid gap-4 w-full max-w-md ${profiles.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
         {profiles.map((p, i) => {
-          const [bg, light] = AVATAR_COLORS[i % AVATAR_COLORS.length];
+          const [bg] = AVATAR_COLORS[i % AVATAR_COLORS.length];
           return (
             <button key={p.id} onClick={() => onSelect(p.id)}
               className="group flex flex-col items-center gap-3 p-6 rounded-2xl bg-white/5 border border-white/8 hover:bg-white/10 hover:border-white/20 transition-all hover:-translate-y-0.5">
@@ -754,8 +1401,6 @@ function LoginView({ profiles, onSelect, onNewProfile, onBack }: {
             </button>
           );
         })}
-
-        {/* Add new profile card */}
         <button onClick={onNewProfile}
           className="flex flex-col items-center gap-3 p-6 rounded-2xl border border-dashed border-slate-700 hover:border-indigo-500 text-slate-500 hover:text-indigo-400 transition-all hover:-translate-y-0.5">
           <div className="w-16 h-16 rounded-full flex items-center justify-center text-3xl border-2 border-dashed border-current">
@@ -789,9 +1434,11 @@ export default function Home() {
   const [planError, setPlanError] = useState('');
   const [learningPlan, setLearningPlan] = useState<LearningPlan | null>(null);
 
+  // Pre-fill position when navigating from tracker
+  const [prefillPosition, setPrefillPosition] = useState('');
+
   const resultsRef = useRef<HTMLDivElement>(null);
 
-  // Load from localStorage once mounted
   useEffect(() => {
     const stored = readStorage<UserProfile[]>(KEYS.profiles, []);
     const currentId = readStorage<string | null>(KEYS.currentProfile, null);
@@ -927,7 +1574,7 @@ export default function Home() {
     );
   }
 
-  // ── Profile setup (first time or editing) ──
+  // ── Profile setup ──
   if (noProfile || editingProfile || newProfileMode || view === 'profile') {
     return (
       <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 py-10 px-4">
@@ -967,6 +1614,25 @@ export default function Home() {
     );
   }
 
+  // ── Applications view ──
+  if (view === 'applications' && currentProfile) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 py-10 px-4">
+        <div className="max-w-2xl mx-auto">
+          <ApplicationTrackerView
+            profileId={currentProfile.id}
+            profileName={currentProfile.name}
+            onBack={() => setView('analyze')}
+            onAnalyze={(position) => {
+              if (position) setPrefillPosition(position);
+              setView('analyze');
+            }}
+          />
+        </div>
+      </main>
+    );
+  }
+
   // ── Analyze view ──
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 py-10 px-4">
@@ -982,8 +1648,11 @@ export default function Home() {
             <h1 className="text-2xl font-extrabold text-slate-900">Job Apply Assistant</h1>
           </div>
 
-          {/* Profile + nav */}
           <div className="flex items-center gap-2 shrink-0">
+            <button onClick={() => setView('applications')}
+              className="text-xs font-medium text-slate-500 hover:text-sky-600 px-3 py-2 rounded-lg hover:bg-sky-50 transition">
+              📋 Postulaciones
+            </button>
             <button onClick={() => setView('goals')}
               className="text-xs font-medium text-slate-500 hover:text-indigo-600 px-3 py-2 rounded-lg hover:bg-indigo-50 transition">
               🎯 Mis metas
@@ -1000,7 +1669,6 @@ export default function Home() {
                 <span className="max-w-[80px] truncate">{currentProfile?.name}</span>
                 <span className="text-slate-400">▾</span>
               </button>
-              {/* Dropdown */}
               <div className="absolute right-0 top-full mt-1 w-52 bg-white border border-slate-200 rounded-xl shadow-lg py-1 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all z-50">
                 {profiles.map(p => (
                   <button key={p.id} onClick={() => switchProfile(p.id)}
@@ -1040,7 +1708,8 @@ export default function Home() {
               <div className="space-y-1.5">
                 <label className="block text-sm font-medium text-slate-700">Puesto *</label>
                 <input type="text" required placeholder="Frontend Dev, PM, Data Analyst…"
-                  value={form.position} onChange={e => setForm(f => ({ ...f, position: e.target.value }))}
+                  value={prefillPosition || form.position}
+                  onChange={e => { setPrefillPosition(''); setForm(f => ({ ...f, position: e.target.value })); }}
                   className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 transition placeholder:text-slate-400" />
               </div>
             </div>
@@ -1083,14 +1752,12 @@ export default function Home() {
           </form>
         </div>
 
-        {/* Loading */}
         {loading && (
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
             <Spinner label="Analizando vacante con IA…" />
           </div>
         )}
 
-        {/* Results */}
         {result && !loading && (
           <div ref={resultsRef} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
 
@@ -1123,7 +1790,6 @@ export default function Home() {
 
             <div className="p-6">
 
-              {/* Afinidad */}
               {activeTab === 'fit' && (
                 <div className="space-y-6">
                   <div className="flex flex-col sm:flex-row items-center gap-6">
@@ -1158,7 +1824,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Tips CV */}
               {activeTab === 'tips' && (
                 <div className="space-y-3">
                   <p className="text-sm text-slate-500">Qué resaltar en tu CV para esta vacante:</p>
@@ -1173,7 +1838,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Carta */}
               {activeTab === 'letter' && (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
@@ -1186,7 +1850,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Autollenado */}
               {activeTab === 'autofill' && (
                 <div className="space-y-3">
                   <p className="text-sm text-slate-500">Campos copiables para formularios:</p>
@@ -1212,7 +1875,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Plan de desarrollo */}
               {activeTab === 'plan' && (
                 <div className="space-y-4">
                   {!learningPlan && !planLoading && (
@@ -1220,9 +1882,7 @@ export default function Home() {
                       <p className="text-slate-600 text-sm leading-relaxed max-w-sm mx-auto">
                         Genera un plan de capacitación personalizado para cubrir las brechas de esta vacante y convertirla en una meta alcanzable.
                       </p>
-                      {planError && (
-                        <p className="text-red-600 text-sm">{planError}</p>
-                      )}
+                      {planError && <p className="text-red-600 text-sm">{planError}</p>}
                       <button onClick={generatePlan}
                         className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-6 py-3 rounded-xl text-sm transition-all shadow-sm">
                         ✦ Generar plan de desarrollo
@@ -1237,7 +1897,7 @@ export default function Home() {
             </div>
 
             <div className="border-t border-slate-100 px-6 py-3 flex items-center justify-between">
-              <span className="text-xs text-slate-400">Generado con Ollama (local) — revisar antes de enviar</span>
+              <span className="text-xs text-slate-400">Generado con IA — revisar antes de enviar</span>
               <button onClick={() => { setResult(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
                 className="text-xs text-slate-400 hover:text-slate-600 transition">
                 Nueva búsqueda →
