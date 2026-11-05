@@ -1132,7 +1132,31 @@ function ApplicationTrackerView({
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-semibold text-slate-800">{app.position}</span>
                           {app.company && <span className="text-xs text-slate-400">{app.company}</span>}
-                          <StatusBadge status={app.status} />
+                          <select
+                            value={app.status}
+                            onClick={e => e.stopPropagation()}
+                            onChange={e => {
+                              e.stopPropagation();
+                              const newStatus = e.target.value as AppStatus;
+                              const updated = apps.map(a => a.id === app.id ? { ...a, status: newStatus } : a);
+                              saveApps(updated);
+                              if (newStatus === 'interview') {
+                                setExpandedApp(app.id);
+                                startEdit({ ...app, status: newStatus });
+                                setShowForm(true);
+                              }
+                            }}
+                            className="text-xs font-semibold px-2 py-0.5 rounded border cursor-pointer focus:outline-none"
+                            style={{
+                              color: STATUS_CONFIG[app.status].color,
+                              background: STATUS_CONFIG[app.status].bg,
+                              borderColor: STATUS_CONFIG[app.status].border,
+                            }}
+                          >
+                            {(Object.entries(STATUS_CONFIG) as [AppStatus, typeof STATUS_CONFIG[AppStatus]][]).map(([k, v]) => (
+                              <option key={k} value={k}>{v.label}</option>
+                            ))}
+                          </select>
                           {app.interviewDate && (
                             <span className="text-xs text-sky-600 bg-sky-50 border border-sky-100 px-2 py-0.5 rounded">
                               📅 {new Date(app.interviewDate).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}
