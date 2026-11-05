@@ -1768,17 +1768,15 @@ export default function Home() {
 
   // ── Not logged in ──
   if (!session) {
+    if ((view as string) === 'login') {
+      return <AuthView onBack={() => setView('landing' as AppView)} />;
+    }
     return (
       <LandingView
         onLogin={() => setView('login' as AppView)}
         onRegister={() => setView('login' as AppView)}
       />
     );
-  }
-
-  // ── Auth view (triggered from landing) ──
-  if ((view as string) === 'login') {
-    return <AuthView onBack={() => setView('analyze')} />;
   }
 
   // ── Profile setup ──
