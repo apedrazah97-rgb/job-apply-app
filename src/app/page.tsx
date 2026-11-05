@@ -1464,31 +1464,31 @@ function BookmarkletHelper() {
       {open && (
         <div className="absolute right-0 top-full mt-2 w-80 bg-white border border-slate-200 rounded-xl shadow-xl p-4 space-y-3 z-50">
           <div className="flex items-start justify-between gap-2">
-            <p className="text-xs font-semibold text-slate-700">Importar vacante desde cualquier página</p>
+            <p className="text-xs font-semibold text-slate-700">Configurar acceso rápido (solo 1 vez)</p>
             <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-600 text-xs shrink-0">✕</button>
           </div>
 
-          <ol className="space-y-2 text-xs text-slate-600">
-            <li className="flex gap-2">
-              <span className="w-4 h-4 rounded-full bg-violet-100 text-violet-600 flex items-center justify-center font-bold shrink-0 text-[10px]">1</span>
-              Copia el código de abajo
-            </li>
-            <li className="flex gap-2">
-              <span className="w-4 h-4 rounded-full bg-violet-100 text-violet-600 flex items-center justify-center font-bold shrink-0 text-[10px]">2</span>
-              Haz clic derecho en tu barra de favoritos → <strong>Añadir página</strong>
-            </li>
-            <li className="flex gap-2">
-              <span className="w-4 h-4 rounded-full bg-violet-100 text-violet-600 flex items-center justify-center font-bold shrink-0 text-[10px]">3</span>
-              Ponle nombre (ej: "Job Apply") y <strong>pega el código como URL</strong>
-            </li>
-            <li className="flex gap-2">
-              <span className="w-4 h-4 rounded-full bg-violet-100 text-violet-600 flex items-center justify-center font-bold shrink-0 text-[10px]">4</span>
-              En cualquier vacante, haz clic en ese favorito — se abre la app con el texto listo ✨
-            </li>
-          </ol>
-
-          <div className="bg-slate-50 border border-slate-200 rounded-lg p-2 font-mono text-[10px] text-slate-500 break-all leading-relaxed max-h-20 overflow-y-auto">
-            {BOOKMARKLET_CODE}
+          <div className="space-y-2.5 text-xs text-slate-600">
+            <div className="flex gap-2.5 items-start">
+              <span className="w-5 h-5 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-bold shrink-0 text-[10px] mt-0.5">1</span>
+              <p>Haz clic en <strong>Copiar código</strong> (botón de abajo)</p>
+            </div>
+            <div className="flex gap-2.5 items-start">
+              <span className="w-5 h-5 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-bold shrink-0 text-[10px] mt-0.5">2</span>
+              <p>En Chrome, abre una pestaña nueva y presiona <strong>Ctrl+Shift+O</strong> para abrir el Administrador de marcadores</p>
+            </div>
+            <div className="flex gap-2.5 items-start">
+              <span className="w-5 h-5 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-bold shrink-0 text-[10px] mt-0.5">3</span>
+              <p>Haz clic en los <strong>⋮ tres puntos</strong> (arriba a la derecha) → <strong>Añadir nuevo marcador</strong></p>
+            </div>
+            <div className="flex gap-2.5 items-start">
+              <span className="w-5 h-5 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-bold shrink-0 text-[10px] mt-0.5">4</span>
+              <p>Nómbralo como quieras (ej: <em>"Importar vacante"</em>), <strong>borra lo que diga en el campo URL</strong> y pega el código copiado ahí. Guarda.</p>
+            </div>
+            <div className="flex gap-2.5 items-start">
+              <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold shrink-0 text-[10px] mt-0.5">✓</span>
+              <p>¡Listo! Cuando estés en LinkedIn, OCC, etc., haz clic en ese marcador y se abre la app con la vacante lista ✨</p>
+            </div>
           </div>
 
           <button
@@ -1500,7 +1500,7 @@ function BookmarkletHelper() {
                 : 'bg-violet-600 hover:bg-violet-700 text-white'
             }`}
           >
-            {copied ? '✓ Copiado' : 'Copiar código'}
+            {copied ? '✓ ¡Código copiado!' : '1. Copiar código primero'}
           </button>
         </div>
       )}
