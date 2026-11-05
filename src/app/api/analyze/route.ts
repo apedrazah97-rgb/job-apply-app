@@ -36,9 +36,9 @@ ${job_description}
 Return exactly this JSON (no other text):
 {
   "fit_score": <integer 0-100>,
-  "fit_summary": "<2-3 sentences evaluating this person's fit for this specific role>",
-  "strengths": ["<specific strength 1>", "<specific strength 2>", "<specific strength 3>", "<specific strength 4>"],
-  "gaps": ["<gap if any>"],
+  "fit_summary": "<2-3 sentences evaluating fit for this specific role. DO NOT use the person's name — refer to them as 'the candidate' or use 'you'. Be specific about why this role is or isn't a match.>",
+  "strengths": ["<specific strength directly tied to a job requirement, e.g. '3 years of SAP MM matches the ERP requirement'>", "<strength 2>", "<strength 3>", "<strength 4>"],
+  "gaps": ["<specific missing skill or experience with detail, e.g. 'No experience with Kubernetes — the role requires container orchestration'>", "<gap 2 if any — be concrete, not generic>"],
   "cv_tips": ["<tip 1: which experience/project to highlight and how>", "<tip 2>", "<tip 3>", "<tip 4>", "<tip 5>"],
   "cover_letter": "<full cover letter in ${coverLetterLang}, 3-4 paragraphs, mentioning ${companyText} and ${position} explicitly, no placeholders>",
   "autofill": {

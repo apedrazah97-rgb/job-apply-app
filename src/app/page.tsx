@@ -1437,6 +1437,11 @@ export default function Home() {
   // Pre-fill position when navigating from tracker
   const [prefillPosition, setPrefillPosition] = useState('');
 
+  // "Me postulé" quick-register
+  const [appliedId, setAppliedId] = useState<string | null>(null);
+  const [showApplyForm, setShowApplyForm] = useState(false);
+  const [applySource, setApplySource] = useState('LinkedIn');
+
   const resultsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1481,6 +1486,8 @@ export default function Home() {
     setError('');
     setLearningPlan(null);
     setSavedGoalId(null);
+    setAppliedId(null);
+    setShowApplyForm(false);
     try {
       const res = await fetch('/api/analyze', {
         method: 'POST',
@@ -1761,21 +1768,78 @@ export default function Home() {
         {result && !loading && (
           <div ref={resultsRef} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
 
-            {/* Save as goal banner */}
-            <div className="px-5 py-3 border-b border-slate-100 bg-slate-50 flex items-center justify-between gap-3">
-              <p className="text-xs text-slate-500">
-                {savedGoalId ? '✓ Guardado en Mis metas' : '¿Te gustaría desarrollarte para tener un trabajo así?'}
-              </p>
-              {savedGoalId ? (
-                <button onClick={() => setView('goals')}
-                  className="text-xs font-semibold text-indigo-600 hover:underline">
-                  Ver mis metas →
-                </button>
-              ) : (
-                <button onClick={saveAsGoal}
-                  className="text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white hover:bg-indigo-50 px-3 py-1.5 rounded-lg transition">
-                  🎯 Guardar como meta
-                </button>
+            {/* Action banner */}
+            <div className="px-5 py-3 border-b border-slate-100 bg-slate-50 space-y-2">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-xs text-slate-500">
+                  {savedGoalId ? '✓ Guardado en Mis metas' : '¿Te gustaría desarrollarte para tener un trabajo así?'}
+                </p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Me postulé */}
+                  {appliedId ? (
+                    <button onClick={() => setView('applications')}
+                      className="text-xs font-semibold text-sky-600 hover:underline">
+                      Ver postulaciones →
+                    </button>
+                  ) : (
+                    <button onClick={() => setShowApplyForm(s => !s)}
+                      className="text-xs font-semibold text-sky-600 border border-sky-200 bg-white hover:bg-sky-50 px-3 py-1.5 rounded-lg transition">
+                      📋 Me postulé
+                    </button>
+                  )}
+                  {/* Guardar como meta */}
+                  {savedGoalId ? (
+                    <button onClick={() => setView('goals')}
+                      className="text-xs font-semibold text-indigo-600 hover:underline">
+                      Ver mis metas →
+                    </button>
+                  ) : (
+                    <button onClick={saveAsGoal}
+                      className="text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white hover:bg-indigo-50 px-3 py-1.5 rounded-lg transition">
+                      🎯 Guardar como meta
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Quick apply form */}
+              {showApplyForm && !appliedId && currentProfile && (
+                <div className="flex items-center gap-2 flex-wrap pt-1">
+                  <span className="text-xs text-slate-500 shrink-0">¿Dónde la encontraste?</span>
+                  <select
+                    value={applySource}
+                    onChange={e => setApplySource(e.target.value)}
+                    className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-sky-200 transition"
+                  >
+                    {SOURCES.map(s => <option key={s}>{s}</option>)}
+                  </select>
+                  <button
+                    onClick={() => {
+                      const newApp: JobApplication = {
+                        id: crypto.randomUUID(),
+                        createdAt: new Date().toISOString(),
+                        company: form.company,
+                        position: form.position,
+                        source: applySource,
+                        status: 'applied',
+                      };
+                      const existing = readStorage<JobApplication[]>(KEYS.applications(currentProfile.id), []);
+                      writeStorage(KEYS.applications(currentProfile.id), [newApp, ...existing]);
+                      setAppliedId(newApp.id);
+                      setShowApplyForm(false);
+                    }}
+                    className="text-xs font-semibold text-white bg-sky-500 hover:bg-sky-600 px-3 py-1.5 rounded-lg transition"
+                  >
+                    Registrar
+                  </button>
+                  <button onClick={() => setShowApplyForm(false)}
+                    className="text-xs text-slate-400 hover:text-slate-600 transition">
+                    Cancelar
+                  </button>
+                </div>
+              )}
+              {appliedId && (
+                <p className="text-xs text-sky-600 font-medium">✓ Registrada en Postulaciones · {applySource}</p>
               )}
             </div>
 
