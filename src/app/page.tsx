@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { supabase } from '@/lib/supabase';
+import type { Session } from '@supabase/supabase-js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -88,26 +90,35 @@ interface JobApplication {
 type AppView = 'landing' | 'login' | 'analyze' | 'profile' | 'goals' | 'applications';
 type ResultTab = 'fit' | 'tips' | 'letter' | 'autofill' | 'plan';
 
-// ── Storage helpers ───────────────────────────────────────────────────────────
+// ── Supabase row → app type mappers ──────────────────────────────────────────
 
-const KEYS = {
-  profiles: 'jaa_profiles',
-  currentProfile: 'jaa_current_profile',
-  goals: (id: string) => `jaa_goals_${id}`,
-  applications: (id: string) => `jaa_apps_${id}`,
-};
-
-function readStorage<T>(key: string, fallback: T): T {
-  try {
-    const v = localStorage.getItem(key);
-    return v ? (JSON.parse(v) as T) : fallback;
-  } catch {
-    return fallback;
-  }
+function rowToGoal(row: Record<string, unknown>, userId: string): SavedGoal {
+  return {
+    id: row.id as string,
+    savedAt: row.saved_at as string,
+    profileId: userId,
+    company: (row.company as string) ?? '',
+    position: row.position as string,
+    language: (row.language as string) ?? 'es',
+    analysis: row.analysis as AnalysisResult,
+    learningPlan: row.learning_plan as LearningPlan | undefined,
+    completedTasks: (row.completed_tasks as string[]) ?? [],
+  };
 }
 
-function writeStorage(key: string, value: unknown) {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+function rowToApp(row: Record<string, unknown>): JobApplication {
+  return {
+    id: row.id as string,
+    createdAt: row.applied_at as string,
+    company: row.company as string,
+    position: row.position as string,
+    source: row.source as string,
+    status: row.status as AppStatus,
+    interviewDate: (row.interview_date as string | null) ?? undefined,
+    rejectionReason: (row.rejection_reason as string | null) ?? undefined,
+    notes: (row.notes as string | null) ?? undefined,
+    interviewQuestions: (row.interview_questions as string[] | null) ?? undefined,
+  };
 }
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -611,40 +622,37 @@ function LearningPlanView({
 
 // ── Goals View ────────────────────────────────────────────────────────────────
 
-function GoalsView({ profileId, onBack }: { profileId: string; onBack: () => void }) {
+function GoalsView({ userId, profile, onBack }: { userId: string; profile: UserProfile | null; onBack: () => void }) {
   const [goals, setGoals] = useState<SavedGoal[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [generatingPlan, setGeneratingPlan] = useState<string | null>(null);
   const [planError, setPlanError] = useState('');
 
   useEffect(() => {
-    setGoals(readStorage<SavedGoal[]>(KEYS.goals(profileId), []));
-  }, [profileId]);
+    supabase.from('goals').select('*').eq('user_id', userId).order('saved_at', { ascending: false })
+      .then(({ data }) => { if (data) setGoals(data.map(r => rowToGoal(r as Record<string, unknown>, userId))); });
+  }, [userId]);
 
-  const deleteGoal = (id: string) => {
-    const updated = goals.filter(g => g.id !== id);
-    setGoals(updated);
-    writeStorage(KEYS.goals(profileId), updated);
+  const deleteGoal = async (id: string) => {
+    await supabase.from('goals').delete().eq('id', id);
+    setGoals(g => g.filter(x => x.id !== id));
     if (expanded === id) setExpanded(null);
   };
 
-  const toggleTask = (goalId: string, key: string) => {
-    const updated = goals.map(g => {
-      if (g.id !== goalId) return g;
-      const done = new Set(g.completedTasks ?? []);
-      if (done.has(key)) done.delete(key); else done.add(key);
-      return { ...g, completedTasks: Array.from(done) };
-    });
-    setGoals(updated);
-    writeStorage(KEYS.goals(profileId), updated);
+  const toggleTask = async (goalId: string, key: string) => {
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal) return;
+    const done = new Set(goal.completedTasks ?? []);
+    if (done.has(key)) done.delete(key); else done.add(key);
+    const newTasks = Array.from(done);
+    await supabase.from('goals').update({ completed_tasks: newTasks }).eq('id', goalId);
+    setGoals(gs => gs.map(g => g.id === goalId ? { ...g, completedTasks: newTasks } : g));
   };
 
   const generatePlan = async (goal: SavedGoal) => {
     setGeneratingPlan(goal.id);
     setPlanError('');
     try {
-      const profiles = readStorage<UserProfile[]>(KEYS.profiles, []);
-      const profile = profiles.find(p => p.id === profileId);
       const user_cv = profile ? buildCVText(profile) : '';
 
       const res = await fetch('/api/learning-plan', {
@@ -661,9 +669,8 @@ function GoalsView({ profileId, onBack }: { profileId: string; onBack: () => voi
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      const updated = goals.map(g => g.id === goal.id ? { ...g, learningPlan: data } : g);
-      setGoals(updated);
-      writeStorage(KEYS.goals(profileId), updated);
+      await supabase.from('goals').update({ learning_plan: data }).eq('id', goal.id);
+      setGoals(gs => gs.map(g => g.id === goal.id ? { ...g, learningPlan: data } : g));
     } catch (err) {
       setPlanError(err instanceof Error ? err.message : 'Error al generar el plan');
     } finally {
@@ -790,12 +797,12 @@ function GoalsView({ profileId, onBack }: { profileId: string; onBack: () => voi
 type TrainingPrompt = { position: string; reason: string } | null;
 
 function ApplicationTrackerView({
-  profileId,
+  userId,
   profileName,
   onBack,
   onAnalyze,
 }: {
-  profileId: string;
+  userId: string;
   profileName: string;
   onBack: () => void;
   onAnalyze: (position?: string) => void;
@@ -815,34 +822,34 @@ function ApplicationTrackerView({
   const [form, setForm] = useState(emptyForm);
 
   useEffect(() => {
-    setApps(readStorage<JobApplication[]>(KEYS.applications(profileId), []));
-  }, [profileId]);
+    supabase.from('applications').select('*').eq('user_id', userId).order('applied_at', { ascending: false })
+      .then(({ data }) => { if (data) setApps(data.map(r => rowToApp(r as Record<string, unknown>))); });
+  }, [userId]);
 
-  const saveApps = (updated: JobApplication[]) => {
-    setApps(updated);
-    writeStorage(KEYS.applications(profileId), updated);
-  };
-
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!form.position.trim()) return;
     if (editingId) {
-      saveApps(apps.map(a => a.id === editingId
+      await supabase.from('applications').update({
+        company: form.company, position: form.position, source: form.source, status: form.status,
+        interview_date: form.interviewDate || null, rejection_reason: form.rejectionReason || null, notes: form.notes || null,
+      }).eq('id', editingId);
+      setApps(apps => apps.map(a => a.id === editingId
         ? { ...a, ...form, interviewDate: form.interviewDate || undefined, rejectionReason: form.rejectionReason || undefined, notes: form.notes || undefined }
         : a
       ));
     } else {
-      const newApp: JobApplication = {
-        id: crypto.randomUUID(),
-        createdAt: new Date().toISOString(),
-        company: form.company,
-        position: form.position,
-        source: form.source,
-        status: form.status,
-        interviewDate: form.interviewDate || undefined,
-        rejectionReason: form.rejectionReason || undefined,
-        notes: form.notes || undefined,
-      };
-      saveApps([newApp, ...apps]);
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      await supabase.from('applications').insert({
+        id, user_id: userId, company: form.company, position: form.position,
+        source: form.source, status: form.status, applied_at: now,
+        interview_date: form.interviewDate || null, rejection_reason: form.rejectionReason || null, notes: form.notes || null,
+      });
+      setApps(apps => [{
+        id, createdAt: now, company: form.company, position: form.position,
+        source: form.source, status: form.status,
+        interviewDate: form.interviewDate || undefined, rejectionReason: form.rejectionReason || undefined, notes: form.notes || undefined,
+      }, ...apps]);
     }
     if (form.status === 'rejected' && form.rejectionReason.trim()) {
       setTrainingPrompt({ position: form.position, reason: form.rejectionReason });
@@ -866,8 +873,9 @@ function ApplicationTrackerView({
     setShowForm(true);
   };
 
-  const deleteApp = (id: string) => {
-    saveApps(apps.filter(a => a.id !== id));
+  const deleteApp = async (id: string) => {
+    await supabase.from('applications').delete().eq('id', id);
+    setApps(apps => apps.filter(a => a.id !== id));
     if (expandedApp === id) setExpandedApp(null);
   };
 
@@ -881,7 +889,8 @@ function ApplicationTrackerView({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      saveApps(apps.map(a => a.id === app.id ? { ...a, interviewQuestions: data.questions } : a));
+      await supabase.from('applications').update({ interview_questions: data.questions }).eq('id', app.id);
+      setApps(apps => apps.map(a => a.id === app.id ? { ...a, interviewQuestions: data.questions } : a));
     } catch {
       // silently fail — user can retry
     } finally {
@@ -1138,8 +1147,8 @@ function ApplicationTrackerView({
                             onChange={e => {
                               e.stopPropagation();
                               const newStatus = e.target.value as AppStatus;
-                              const updated = apps.map(a => a.id === app.id ? { ...a, status: newStatus } : a);
-                              saveApps(updated);
+                              supabase.from('applications').update({ status: newStatus }).eq('id', app.id).then(() => {});
+                              setApps(apps => apps.map(a => a.id === app.id ? { ...a, status: newStatus } : a));
                               if (newStatus === 'interview') {
                                 setExpandedApp(app.id);
                                 startEdit({ ...app, status: newStatus });
@@ -1309,6 +1318,83 @@ function ApplicationTrackerView({
   );
 }
 
+// ── Auth view (email + password) ─────────────────────────────────────────────
+
+function AuthView({ onBack }: { onBack: () => void }) {
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      if (mode === 'login') {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error de autenticación');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const inputClass = "w-full border border-white/20 bg-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition";
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 flex flex-col items-center justify-center px-6 py-16">
+      <div className="w-full max-w-sm space-y-6">
+        <div className="text-center space-y-2">
+          <button onClick={onBack} className="text-xs text-slate-500 hover:text-slate-300 transition mb-2 block mx-auto">
+            ← Volver
+          </button>
+          <div className="flex items-center justify-center gap-2 mb-4">
+            <span className="text-indigo-400 text-xl">✦</span>
+            <span className="font-bold text-lg tracking-tight text-white">Job Apply</span>
+          </div>
+          <h2 className="text-2xl font-extrabold text-white">
+            {mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
+          </h2>
+          <p className="text-slate-400 text-sm">
+            {mode === 'login' ? 'Accede a tus postulaciones y metas' : 'Empieza a optimizar tus aplicaciones'}
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <input type="email" required placeholder="tu@email.com" value={email}
+            onChange={e => setEmail(e.target.value)} className={inputClass} />
+          <input type="password" required placeholder="Contraseña (mín. 6 caracteres)" value={password}
+            onChange={e => setPassword(e.target.value)} className={inputClass} />
+
+          {error && (
+            <p className="text-red-400 text-xs text-center">{error}</p>
+          )}
+
+          <button type="submit" disabled={loading}
+            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-semibold py-3 rounded-xl text-sm transition-all shadow-lg">
+            {loading ? '…' : mode === 'login' ? 'Entrar' : 'Crear cuenta'}
+          </button>
+        </form>
+
+        <p className="text-center text-sm text-slate-400">
+          {mode === 'login' ? '¿No tienes cuenta?' : '¿Ya tienes cuenta?'}{' '}
+          <button onClick={() => { setMode(m => m === 'login' ? 'signup' : 'login'); setError(''); }}
+            className="text-indigo-400 hover:text-indigo-300 font-semibold underline underline-offset-2 transition">
+            {mode === 'login' ? 'Crear cuenta' : 'Iniciar sesión'}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── Landing page ─────────────────────────────────────────────────────────────
 
 const FEATURES = [
@@ -1318,8 +1404,7 @@ const FEATURES = [
   { icon: '🎯', title: 'Plan de desarrollo', desc: 'Ruta de capacitación personalizada para las vacantes que aspiras.' },
 ];
 
-function LandingView({ profiles, onLogin, onRegister }: {
-  profiles: UserProfile[];
+function LandingView({ onLogin, onRegister }: {
   onLogin: () => void;
   onRegister: () => void;
 }) {
@@ -1330,17 +1415,15 @@ function LandingView({ profiles, onLogin, onRegister }: {
           <span className="text-indigo-400 text-xl">✦</span>
           <span className="font-bold text-lg tracking-tight">Job Apply</span>
         </div>
-        {profiles.length > 0 && (
-          <button onClick={onLogin} className="text-sm font-medium text-slate-300 hover:text-white transition">
-            Iniciar sesión →
-          </button>
-        )}
+        <button onClick={onLogin} className="text-sm font-medium text-slate-300 hover:text-white transition">
+          Iniciar sesión →
+        </button>
       </nav>
 
       <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-16 space-y-8 max-w-3xl mx-auto w-full">
         <div className="inline-flex items-center gap-2 bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-semibold px-3 py-1.5 rounded-full">
           <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
-          IA gratuita · Sin costos · Datos solo en tu dispositivo
+          IA gratuita · Sin costos · Datos en la nube
         </div>
 
         <div className="space-y-4">
@@ -1379,7 +1462,7 @@ function LandingView({ profiles, onLogin, onRegister }: {
       </div>
 
       <footer className="text-center py-5 text-xs text-slate-600">
-        Los datos se guardan localmente en tu dispositivo · Sin servidores externos
+        Datos guardados en la nube · Accede desde cualquier dispositivo
       </footer>
     </div>
   );
@@ -1511,12 +1594,11 @@ function BookmarkletHelper() {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [view, setView] = useState<AppView>('landing');
-  const [profiles, setProfiles] = useState<UserProfile[]>([]);
-  const [currentProfileId, setCurrentProfileId] = useState<string | null>(null);
+  const [view, setView] = useState<AppView>('analyze');
+  const [session, setSession] = useState<Session | null>(null);
+  const [dbProfile, setDbProfile] = useState<UserProfile | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [editingProfile, setEditingProfile] = useState(false);
-  const [newProfileMode, setNewProfileMode] = useState(false);
-  const [hydrated, setHydrated] = useState(false);
 
   const [form, setForm] = useState({ company: '', position: '', language: 'es', description: '' });
   const [loading, setLoading] = useState(false);
@@ -1529,27 +1611,24 @@ export default function Home() {
   const [planError, setPlanError] = useState('');
   const [learningPlan, setLearningPlan] = useState<LearningPlan | null>(null);
 
-  // Pre-fill position when navigating from tracker
   const [prefillPosition, setPrefillPosition] = useState('');
-
-  // Bookmarklet import — stored until user is logged in
   const [pendingImport, setPendingImport] = useState('');
 
-  // "Me postulé" quick-register
   const [appliedId, setAppliedId] = useState<string | null>(null);
   const [showApplyForm, setShowApplyForm] = useState(false);
   const [applySource, setApplySource] = useState('LinkedIn');
 
   const resultsRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const stored = readStorage<UserProfile[]>(KEYS.profiles, []);
-    const currentId = readStorage<string | null>(KEYS.currentProfile, null);
-    setProfiles(stored);
-    setCurrentProfileId(currentId && stored.find(p => p.id === currentId) ? currentId : stored[0]?.id ?? null);
-    setHydrated(true);
+  const loadDbProfile = useCallback(async (userId: string) => {
+    const { data } = await supabase.from('profiles').select('*').eq('id', userId).single();
+    if (data) {
+      setDbProfile({ id: userId, name: data.name, ...(data.profile_data as Partial<UserProfile>) } as UserProfile);
+    }
+  }, []);
 
-    // Bookmarklet import via URL hash
+  useEffect(() => {
+    // Check URL hash for bookmarklet import
     const hash = window.location.hash;
     if (hash.startsWith('#import=')) {
       try {
@@ -1558,41 +1637,50 @@ export default function Home() {
       } catch {}
       window.history.replaceState(null, '', window.location.pathname);
     }
-  }, []);
 
-  // Apply bookmarklet import once user is logged in
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) loadDbProfile(session.user.id);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      setSession(session);
+      if (session) loadDbProfile(session.user.id);
+      else { setDbProfile(null); setAuthLoading(false); }
+    });
+    return () => subscription.unsubscribe();
+  }, [loadDbProfile]);
+
+  // Apply bookmarklet import once user is logged in and profile loaded
   useEffect(() => {
-    if (pendingImport && hydrated && currentProfileId) {
+    if (pendingImport && session && dbProfile) {
       setForm(f => ({ ...f, description: pendingImport }));
       setPendingImport('');
       setView('analyze');
     }
-  }, [pendingImport, hydrated, currentProfileId]);
+  }, [pendingImport, session, dbProfile]);
 
-  const currentProfile = profiles.find(p => p.id === currentProfileId) ?? null;
-  const noProfile = hydrated && profiles.length === 0;
+  const currentProfile = dbProfile;
 
-  const saveProfile = (p: UserProfile) => {
-    const isNew = !profiles.find(x => x.id === p.id);
-    const updated = isNew ? [...profiles, p] : profiles.map(x => x.id === p.id ? p : x);
-    setProfiles(updated);
-    setCurrentProfileId(p.id);
-    writeStorage(KEYS.profiles, updated);
-    writeStorage(KEYS.currentProfile, p.id);
+  const saveProfile = async (p: UserProfile) => {
+    if (!session) return;
+    const { name, id: _, ...rest } = p;
+    await supabase.from('profiles').upsert({
+      id: session.user.id,
+      name,
+      profile_data: rest,
+      updated_at: new Date().toISOString(),
+    });
+    setDbProfile({ ...p, id: session.user.id });
     setEditingProfile(false);
-    setNewProfileMode(false);
     setView('analyze');
   };
 
-  const switchProfile = (id: string) => {
-    setCurrentProfileId(id);
-    writeStorage(KEYS.currentProfile, id);
-    setView('analyze');
-  };
-
-  const logout = () => {
+  const logout = async () => {
+    await supabase.auth.signOut();
     setResult(null);
-    setView('landing');
+    setDbProfile(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1629,22 +1717,21 @@ export default function Home() {
     }
   };
 
-  const saveAsGoal = useCallback(() => {
-    if (!result || !currentProfile) return;
-    const goal: SavedGoal = {
-      id: crypto.randomUUID(),
-      savedAt: new Date().toISOString(),
-      profileId: currentProfile.id,
-      company: form.company,
+  const saveAsGoal = useCallback(async () => {
+    if (!result || !session) return;
+    const id = crypto.randomUUID();
+    await supabase.from('goals').insert({
+      id,
+      user_id: session.user.id,
       position: form.position,
+      company: form.company || null,
       language: form.language,
       analysis: result,
-      learningPlan: learningPlan ?? undefined,
-    };
-    const existing = readStorage<SavedGoal[]>(KEYS.goals(currentProfile.id), []);
-    writeStorage(KEYS.goals(currentProfile.id), [goal, ...existing]);
-    setSavedGoalId(goal.id);
-  }, [result, currentProfile, form, learningPlan]);
+      learning_plan: learningPlan ?? null,
+      saved_at: new Date().toISOString(),
+    });
+    setSavedGoalId(id);
+  }, [result, session, form, learningPlan]);
 
   const generatePlan = async () => {
     if (!result || !currentProfile) return;
@@ -1673,43 +1760,35 @@ export default function Home() {
     }
   };
 
-  if (!hydrated) return null;
+  if (authLoading) return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 flex items-center justify-center">
+      <div className="w-8 h-8 rounded-full border-4 border-indigo-500 border-t-transparent animate-spin" />
+    </div>
+  );
 
-  // ── Landing ──
-  if (view === 'landing') {
+  // ── Not logged in ──
+  if (!session) {
     return (
       <LandingView
-        profiles={profiles}
-        onLogin={() => setView(profiles.length > 0 ? 'login' : 'profile')}
-        onRegister={() => { setNewProfileMode(true); setView('profile'); }}
+        onLogin={() => setView('login' as AppView)}
+        onRegister={() => setView('login' as AppView)}
       />
     );
   }
 
-  // ── Login / profile selector ──
-  if (view === 'login') {
-    return (
-      <LoginView
-        profiles={profiles}
-        onSelect={switchProfile}
-        onNewProfile={() => { setNewProfileMode(true); setView('profile'); }}
-        onBack={() => setView('landing')}
-      />
-    );
+  // ── Auth view (triggered from landing) ──
+  if ((view as string) === 'login') {
+    return <AuthView onBack={() => setView('analyze')} />;
   }
 
   // ── Profile setup ──
-  if (noProfile || editingProfile || newProfileMode || view === 'profile') {
+  if (!dbProfile || editingProfile || view === 'profile') {
     return (
       <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 py-10 px-4">
         <div className="max-w-2xl mx-auto space-y-6">
           <header className="text-center space-y-1">
-            <button onClick={() => setView('landing')}
-              className="text-sm text-slate-400 hover:text-slate-600 transition mb-2 inline-block">
-              ← Volver al inicio
-            </button>
             <h1 className="text-2xl font-extrabold text-slate-900">
-              {noProfile ? 'Crea tu perfil' : 'Editar perfil'}
+              {!dbProfile ? 'Crea tu perfil' : 'Editar perfil'}
             </h1>
             <p className="text-slate-500 text-sm">
               Esta info se usa como contexto para generar tu aplicación — sin tokens extra por re-enviarlo
@@ -1717,9 +1796,9 @@ export default function Home() {
           </header>
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
             <ProfileForm
-              initial={newProfileMode ? undefined : (editingProfile && currentProfile ? currentProfile : undefined)}
-              onSave={(p) => { setNewProfileMode(false); saveProfile(p); }}
-              onCancel={(editingProfile || newProfileMode) ? () => { setEditingProfile(false); setNewProfileMode(false); } : undefined}
+              initial={editingProfile && currentProfile ? currentProfile : undefined}
+              onSave={(p) => saveProfile(p)}
+              onCancel={editingProfile && dbProfile ? () => { setEditingProfile(false); setView('analyze'); } : undefined}
             />
           </div>
         </div>
@@ -1728,24 +1807,24 @@ export default function Home() {
   }
 
   // ── Goals view ──
-  if (view === 'goals' && currentProfile) {
+  if (view === 'goals' && session) {
     return (
       <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 py-10 px-4">
         <div className="max-w-2xl mx-auto">
-          <GoalsView profileId={currentProfile.id} onBack={() => setView('analyze')} />
+          <GoalsView userId={session.user.id} profile={dbProfile} onBack={() => setView('analyze')} />
         </div>
       </main>
     );
   }
 
   // ── Applications view ──
-  if (view === 'applications' && currentProfile) {
+  if (view === 'applications' && session) {
     return (
       <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 py-10 px-4">
         <div className="max-w-2xl mx-auto">
           <ApplicationTrackerView
-            profileId={currentProfile.id}
-            profileName={currentProfile.name}
+            userId={session.user.id}
+            profileName={dbProfile?.name ?? ''}
             onBack={() => setView('analyze')}
             onAnalyze={(position) => {
               if (position) setPrefillPosition(position);
@@ -1788,32 +1867,17 @@ export default function Home() {
             <div className="relative group">
               <button className="flex items-center gap-2 text-xs font-semibold text-slate-700 border border-slate-200 px-3 py-2 rounded-lg hover:bg-slate-50 transition">
                 <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold">
-                  {currentProfile?.name[0]?.toUpperCase()}
+                  {currentProfile?.name[0]?.toUpperCase() ?? '?'}
                 </span>
-                <span className="max-w-[80px] truncate">{currentProfile?.name}</span>
+                <span className="max-w-[80px] truncate">{currentProfile?.name ?? session?.user.email}</span>
                 <span className="text-slate-400">▾</span>
               </button>
               <div className="absolute right-0 top-full mt-1 w-52 bg-white border border-slate-200 rounded-xl shadow-lg py-1 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all z-50">
-                {profiles.map(p => (
-                  <button key={p.id} onClick={() => switchProfile(p.id)}
-                    className={`w-full text-left px-4 py-2.5 text-sm flex items-center gap-2 hover:bg-slate-50 transition ${p.id === currentProfileId ? 'text-indigo-600 font-semibold' : 'text-slate-700'}`}>
-                    <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold shrink-0">
-                      {p.name[0]?.toUpperCase()}
-                    </span>
-                    <span className="truncate">{p.name}</span>
-                    {p.id === currentProfileId && <span className="ml-auto text-indigo-400">✓</span>}
-                  </button>
-                ))}
-                <div className="border-t border-slate-100 mt-1 pt-1">
-                  <button onClick={() => setEditingProfile(true)}
-                    className="w-full text-left px-4 py-2.5 text-sm text-slate-500 hover:bg-slate-50 transition">
-                    ✏️ Editar perfil
-                  </button>
-                  <button onClick={() => setNewProfileMode(true)}
-                    className="w-full text-left px-4 py-2.5 text-sm text-slate-500 hover:bg-slate-50 transition">
-                    ＋ Nuevo perfil
-                  </button>
-                </div>
+                <div className="px-4 py-2.5 text-xs text-slate-400 border-b border-slate-100 truncate">{session?.user.email}</div>
+                <button onClick={() => setEditingProfile(true)}
+                  className="w-full text-left px-4 py-2.5 text-sm text-slate-500 hover:bg-slate-50 transition">
+                  ✏️ Editar perfil
+                </button>
               </div>
             </div>
           </div>
@@ -1923,7 +1987,7 @@ export default function Home() {
               </div>
 
               {/* Quick apply form */}
-              {showApplyForm && !appliedId && currentProfile && (
+              {showApplyForm && !appliedId && session && (
                 <div className="flex items-center gap-2 flex-wrap pt-1">
                   <span className="text-xs text-slate-500 shrink-0">¿Dónde la encontraste?</span>
                   <select
@@ -1934,18 +1998,15 @@ export default function Home() {
                     {SOURCES.map(s => <option key={s}>{s}</option>)}
                   </select>
                   <button
-                    onClick={() => {
-                      const newApp: JobApplication = {
-                        id: crypto.randomUUID(),
-                        createdAt: new Date().toISOString(),
-                        company: form.company,
-                        position: form.position,
-                        source: applySource,
-                        status: 'applied',
-                      };
-                      const existing = readStorage<JobApplication[]>(KEYS.applications(currentProfile.id), []);
-                      writeStorage(KEYS.applications(currentProfile.id), [newApp, ...existing]);
-                      setAppliedId(newApp.id);
+                    onClick={async () => {
+                      const id = crypto.randomUUID();
+                      const now = new Date().toISOString();
+                      await supabase.from('applications').insert({
+                        id, user_id: session.user.id,
+                        company: form.company, position: form.position,
+                        source: applySource, status: 'applied', applied_at: now,
+                      });
+                      setAppliedId(id);
                       setShowApplyForm(false);
                     }}
                     className="text-xs font-semibold text-white bg-sky-500 hover:bg-sky-600 px-3 py-1.5 rounded-lg transition"
