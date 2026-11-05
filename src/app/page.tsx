@@ -1461,6 +1461,9 @@ export default function Home() {
   // Pre-fill position when navigating from tracker
   const [prefillPosition, setPrefillPosition] = useState('');
 
+  // Bookmarklet import — stored until user is logged in
+  const [pendingImport, setPendingImport] = useState('');
+
   // "Me postulé" quick-register
   const [appliedId, setAppliedId] = useState<string | null>(null);
   const [showApplyForm, setShowApplyForm] = useState(false);
@@ -1474,7 +1477,26 @@ export default function Home() {
     setProfiles(stored);
     setCurrentProfileId(currentId && stored.find(p => p.id === currentId) ? currentId : stored[0]?.id ?? null);
     setHydrated(true);
+
+    // Bookmarklet import via URL hash
+    const hash = window.location.hash;
+    if (hash.startsWith('#import=')) {
+      try {
+        const decoded = decodeURIComponent(hash.slice(8)).trim();
+        if (decoded) setPendingImport(decoded);
+      } catch {}
+      window.history.replaceState(null, '', window.location.pathname);
+    }
   }, []);
+
+  // Apply bookmarklet import once user is logged in
+  useEffect(() => {
+    if (pendingImport && hydrated && currentProfileId) {
+      setForm(f => ({ ...f, description: pendingImport }));
+      setPendingImport('');
+      setView('analyze');
+    }
+  }, [pendingImport, hydrated, currentProfileId]);
 
   const currentProfile = profiles.find(p => p.id === currentProfileId) ?? null;
   const noProfile = hydrated && profiles.length === 0;
@@ -1760,9 +1782,20 @@ export default function Home() {
             </div>
 
             <div className="space-y-1.5">
-              <label className="block text-sm font-medium text-slate-700">Descripción de la vacante *</label>
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-medium text-slate-700">Descripción de la vacante *</label>
+                <a
+                  href={`javascript:(function(){var t=window.getSelection().toString().trim();if(t.length<200)t=document.body.innerText;window.open('https://job-apply-app-one.vercel.app/#import='+encodeURIComponent(t.substring(0,8000)),'_blank');})();`}
+                  onClick={e => e.preventDefault()}
+                  draggable
+                  title="Arrastra este botón a tu barra de favoritos. Luego, en cualquier página de vacante, haz click en él para importar automáticamente."
+                  className="text-xs font-semibold text-violet-600 border border-violet-200 bg-violet-50 hover:bg-violet-100 px-2.5 py-1 rounded-lg transition cursor-grab select-none"
+                >
+                  🔖 Arrastrar a favoritos
+                </a>
+              </div>
               <textarea rows={8} required
-                placeholder="Pega aquí el texto completo de la oferta — requisitos, responsabilidades, descripción de la empresa…"
+                placeholder="Pega aquí el texto completo de la oferta — o usa el bookmarklet de favoritos estando en la página de la vacante"
                 value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
                 className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 transition resize-none placeholder:text-slate-400 font-mono leading-relaxed" />
               {form.description && (
