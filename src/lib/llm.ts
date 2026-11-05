@@ -15,7 +15,7 @@ export async function chatJSON(messages: Message[], maxTokens = 4096): Promise<s
 // ── Groq (OpenAI-compatible, free tier) ──────────────────────────────────────
 
 async function groqChat(messages: Message[], maxTokens: number): Promise<string> {
-  const model = process.env.GROQ_MODEL || 'llama3-70b-8192';
+  const model = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
 
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
