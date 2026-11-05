@@ -1437,6 +1437,77 @@ function LoginView({ profiles, onSelect, onNewProfile, onBack }: {
   );
 }
 
+// ── Bookmarklet helper ────────────────────────────────────────────────────────
+
+const BOOKMARKLET_CODE = `javascript:(function(){var t=window.getSelection().toString().trim();if(t.length<200)t=document.body.innerText;window.open('https://job-apply-app-one.vercel.app/#import='+encodeURIComponent(t.substring(0,8000)),'_blank');})();`;
+
+function BookmarkletHelper() {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(BOOKMARKLET_CODE);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="text-xs font-semibold text-violet-600 border border-violet-200 bg-violet-50 hover:bg-violet-100 px-2.5 py-1 rounded-lg transition"
+      >
+        🔖 Importar desde otra web
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-80 bg-white border border-slate-200 rounded-xl shadow-xl p-4 space-y-3 z-50">
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-xs font-semibold text-slate-700">Importar vacante desde cualquier página</p>
+            <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-600 text-xs shrink-0">✕</button>
+          </div>
+
+          <ol className="space-y-2 text-xs text-slate-600">
+            <li className="flex gap-2">
+              <span className="w-4 h-4 rounded-full bg-violet-100 text-violet-600 flex items-center justify-center font-bold shrink-0 text-[10px]">1</span>
+              Copia el código de abajo
+            </li>
+            <li className="flex gap-2">
+              <span className="w-4 h-4 rounded-full bg-violet-100 text-violet-600 flex items-center justify-center font-bold shrink-0 text-[10px]">2</span>
+              Haz clic derecho en tu barra de favoritos → <strong>Añadir página</strong>
+            </li>
+            <li className="flex gap-2">
+              <span className="w-4 h-4 rounded-full bg-violet-100 text-violet-600 flex items-center justify-center font-bold shrink-0 text-[10px]">3</span>
+              Ponle nombre (ej: "Job Apply") y <strong>pega el código como URL</strong>
+            </li>
+            <li className="flex gap-2">
+              <span className="w-4 h-4 rounded-full bg-violet-100 text-violet-600 flex items-center justify-center font-bold shrink-0 text-[10px]">4</span>
+              En cualquier vacante, haz clic en ese favorito — se abre la app con el texto listo ✨
+            </li>
+          </ol>
+
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-2 font-mono text-[10px] text-slate-500 break-all leading-relaxed max-h-20 overflow-y-auto">
+            {BOOKMARKLET_CODE}
+          </div>
+
+          <button
+            type="button"
+            onClick={copy}
+            className={`w-full text-xs font-semibold py-2 rounded-lg transition ${
+              copied
+                ? 'bg-emerald-500 text-white'
+                : 'bg-violet-600 hover:bg-violet-700 text-white'
+            }`}
+          >
+            {copied ? '✓ Copiado' : 'Copiar código'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -1784,15 +1855,7 @@ export default function Home() {
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <label className="block text-sm font-medium text-slate-700">Descripción de la vacante *</label>
-                <a
-                  href={`javascript:(function(){var t=window.getSelection().toString().trim();if(t.length<200)t=document.body.innerText;window.open('https://job-apply-app-one.vercel.app/#import='+encodeURIComponent(t.substring(0,8000)),'_blank');})();`}
-                  onClick={e => e.preventDefault()}
-                  draggable
-                  title="Arrastra este botón a tu barra de favoritos. Luego, en cualquier página de vacante, haz click en él para importar automáticamente."
-                  className="text-xs font-semibold text-violet-600 border border-violet-200 bg-violet-50 hover:bg-violet-100 px-2.5 py-1 rounded-lg transition cursor-grab select-none"
-                >
-                  🔖 Arrastrar a favoritos
-                </a>
+                <BookmarkletHelper />
               </div>
               <textarea rows={8} required
                 placeholder="Pega aquí el texto completo de la oferta — o usa el bookmarklet de favoritos estando en la página de la vacante"
