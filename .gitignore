@@ -1,0 +1,17 @@
+# env — nunca subir keys
+.env
+.env.local
+.env*.local
+
+# Next.js
+.next/
+out/
+
+# deps
+node_modules/
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+.vercel
