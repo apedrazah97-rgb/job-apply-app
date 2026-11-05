@@ -3,13 +3,14 @@ import { chatJSON, extractJSON } from '@/lib/llm';
 
 export async function POST(req: NextRequest) {
   try {
-    const { position, company } = await req.json();
+    const { position, company, language } = await req.json();
 
     if (!position) {
       return NextResponse.json({ error: 'Falta el puesto' }, { status: 400 });
     }
 
     const companyText = company ? `en ${company}` : 'en la empresa';
+    const lang = language === 'en' ? 'English' : 'Spanish';
 
     const text = await chatJSON([
       {
@@ -22,7 +23,7 @@ export async function POST(req: NextRequest) {
 
 Mix behavioral, technical, and situational questions. Make them specific to this role.
 
-Respond in Spanish. Return exactly this JSON:
+Respond in ${lang}. Return exactly this JSON:
 {
   "questions": [
     "<pregunta 1>",

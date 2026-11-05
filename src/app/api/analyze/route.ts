@@ -12,9 +12,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Faltan campos requeridos' }, { status: 400 });
     }
 
-    const coverLetterLang = language === 'es'
+    const isSpanish = language === 'es';
+    const coverLetterLang = isSpanish
       ? 'Spanish (formal, warm, professional)'
       : 'English (confident, concise, professional)';
+    const responseLang = isSpanish ? 'Spanish' : 'English';
     const companyText = company || 'the company';
 
     const text = await chatJSON([
@@ -23,12 +25,13 @@ export async function POST(req: NextRequest) {
         role: 'user',
         content: `Analyze this job posting for the user and return a JSON application package.
 
+IMPORTANT: Write ALL text fields (fit_summary, strengths, gaps, cv_tips, cover_letter, summary, why_company) in ${responseLang}. Only the cover letter uses ${coverLetterLang} style.
+
 USER'S CV / PROFILE:
 ${user_cv}
 
 Company: ${companyText}
 Position: ${position}
-Cover letter language: ${coverLetterLang}
 
 JOB DESCRIPTION:
 ${job_description}
@@ -36,10 +39,10 @@ ${job_description}
 Return exactly this JSON (no other text):
 {
   "fit_score": <integer 0-100>,
-  "fit_summary": "<2-3 sentences evaluating fit for this specific role. DO NOT use the person's name — refer to them as 'the candidate' or use 'you'. Be specific about why this role is or isn't a match.>",
-  "strengths": ["<specific strength directly tied to a job requirement, e.g. '3 years of SAP MM matches the ERP requirement'>", "<strength 2>", "<strength 3>", "<strength 4>"],
-  "gaps": ["<specific missing skill or experience with detail, e.g. 'No experience with Kubernetes — the role requires container orchestration'>", "<gap 2 if any — be concrete, not generic>"],
-  "cv_tips": ["<tip 1: which experience/project to highlight and how>", "<tip 2>", "<tip 3>", "<tip 4>", "<tip 5>"],
+  "fit_summary": "<2-3 sentences in ${responseLang} evaluating fit for this specific role. DO NOT use the person's name — use 'tú' or 'you'. Be specific about why this role is or isn't a match.>",
+  "strengths": ["<specific strength in ${responseLang} directly tied to a job requirement>", "<strength 2>", "<strength 3>", "<strength 4>"],
+  "gaps": ["<specific missing skill in ${responseLang} with detail, e.g. 'Sin experiencia en Kubernetes — el puesto requiere orquestación de contenedores'>", "<gap 2 if any — be concrete>"],
+  "cv_tips": ["<tip in ${responseLang}: which experience/project to highlight and how>", "<tip 2>", "<tip 3>", "<tip 4>", "<tip 5>"],
   "cover_letter": "<full cover letter in ${coverLetterLang}, 3-4 paragraphs, mentioning ${companyText} and ${position} explicitly, no placeholders>",
   "autofill": {
     "name": "<person's name from CV>",
@@ -47,8 +50,8 @@ Return exactly this JSON (no other text):
     "phone": "<phone from CV>",
     "location": "<location from CV>",
     "portfolio": "<portfolio from CV or empty string>",
-    "summary": "<2-3 sentence professional summary adapted specifically for ${position} at ${companyText}>",
-    "why_company": "<3-4 sentences answering why this person specifically wants to work at ${companyText}>"
+    "summary": "<2-3 sentence professional summary in ${responseLang} adapted specifically for ${position} at ${companyText}>",
+    "why_company": "<3-4 sentences in ${responseLang} answering why this person specifically wants to work at ${companyText}>"
   }
 }`,
       },

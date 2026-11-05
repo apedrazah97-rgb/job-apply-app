@@ -877,7 +877,7 @@ function ApplicationTrackerView({
       const res = await fetch('/api/interview-questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ position: app.position, company: app.company }),
+        body: JSON.stringify({ position: app.position, company: app.company, language: 'es' }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
