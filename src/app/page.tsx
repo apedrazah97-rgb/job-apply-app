@@ -1320,24 +1320,32 @@ function ApplicationTrackerView({
 
 // ── Auth view (email + password) ─────────────────────────────────────────────
 
-function AuthView({ onBack }: { onBack: () => void }) {
-  const [mode, setMode] = useState<'login' | 'signup'>('login');
+function AuthView({ onBack, initialMode = 'login' }: { onBack: () => void; initialMode?: 'login' | 'signup' }) {
+  const [mode, setMode] = useState<'login' | 'signup'>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setSuccess('');
     try {
       if (mode === 'login') {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
+        setSuccess('Iniciando sesión…');
       } else {
-        const { error } = await supabase.auth.signUp({ email, password });
+        const { data, error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
+        if (data.session) {
+          setSuccess('¡Cuenta creada! Iniciando sesión…');
+        } else {
+          setSuccess('¡Cuenta creada! Revisa tu email para confirmar.');
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error de autenticación');
@@ -1373,9 +1381,8 @@ function AuthView({ onBack }: { onBack: () => void }) {
           <input type="password" required placeholder="Contraseña (mín. 6 caracteres)" value={password}
             onChange={e => setPassword(e.target.value)} className={inputClass} />
 
-          {error && (
-            <p className="text-red-400 text-xs text-center">{error}</p>
-          )}
+          {error && <p className="text-red-400 text-xs text-center">{error}</p>}
+          {success && <p className="text-green-400 text-xs text-center">{success}</p>}
 
           <button type="submit" disabled={loading}
             className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-semibold py-3 rounded-xl text-sm transition-all shadow-lg">
@@ -1769,12 +1776,15 @@ export default function Home() {
   // ── Not logged in ──
   if (!session) {
     if ((view as string) === 'login') {
-      return <AuthView onBack={() => setView('landing' as AppView)} />;
+      return <AuthView onBack={() => setView('landing' as AppView)} initialMode="login" />;
+    }
+    if ((view as string) === 'register') {
+      return <AuthView onBack={() => setView('landing' as AppView)} initialMode="signup" />;
     }
     return (
       <LandingView
         onLogin={() => setView('login' as AppView)}
-        onRegister={() => setView('login' as AppView)}
+        onRegister={() => setView('register' as AppView)}
       />
     );
   }
