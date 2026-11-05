@@ -69,7 +69,7 @@ interface SavedGoal {
   learningPlan?: LearningPlan;
 }
 
-type AppView = 'analyze' | 'profile' | 'goals';
+type AppView = 'landing' | 'login' | 'analyze' | 'profile' | 'goals';
 type ResultTab = 'fit' | 'tips' | 'letter' | 'autofill' | 'plan';
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -200,6 +200,81 @@ function PriorityBadge({ p }: { p: 'alta' | 'media' | 'baja' }) {
   );
 }
 
+// ── CSV import helpers ────────────────────────────────────────────────────────
+
+const CSV_FIELD_MAP: Record<string, keyof Omit<UserProfile, 'id'>> = {
+  nombre: 'name',       name: 'name',
+  email: 'email',       correo: 'email',
+  telefono: 'phone',    phone: 'phone',
+  ubicacion: 'location', location: 'location',
+  portfolio: 'portfolio', sitio: 'portfolio',
+  idiomas: 'languages', languages: 'languages',
+  educacion: 'education', education: 'education', formacion: 'education',
+  experiencia: 'experience', experience: 'experience',
+  habilidades: 'skills', skills: 'skills', competencias: 'skills',
+};
+
+const MULTI_FIELDS = new Set<string>(['education', 'experience', 'skills']);
+
+function parseKeyValueCSV(text: string): Partial<Omit<UserProfile, 'id'>> {
+  const lines = text.split(/\r?\n/).filter(l => {
+    const t = l.trim();
+    return t && !t.startsWith('campo') && !t.startsWith('field');
+  });
+  const multi: Record<string, string[]> = {};
+  const single: Record<string, string> = {};
+
+  for (const line of lines) {
+    const commaIdx = line.indexOf(',');
+    if (commaIdx === -1) continue;
+    const rawKey = line.slice(0, commaIdx).trim().toLowerCase();
+    let val = line.slice(commaIdx + 1).trim();
+    // Strip CSV quotes and unescape ""
+    if (val.startsWith('"')) {
+      val = val.slice(1);
+      if (val.endsWith('"')) val = val.slice(0, -1);
+      val = val.replace(/""/g, '"');
+    }
+    const field = CSV_FIELD_MAP[rawKey];
+    if (!field || !val) continue;
+    if (MULTI_FIELDS.has(field)) {
+      if (!multi[field]) multi[field] = [];
+      multi[field].push(val);
+    } else {
+      single[field] = val;
+    }
+  }
+
+  const result: Record<string, string> = { ...single };
+  for (const [field, vals] of Object.entries(multi)) {
+    result[field] = vals.join('\n');
+  }
+  return result as Partial<Omit<UserProfile, 'id'>>;
+}
+
+const CSV_TEMPLATE = `campo,valor
+nombre,Tu Nombre Completo
+email,tu@email.com
+telefono,+52 1 55 1234 5678
+ubicacion,"Ciudad, Estado, País"
+portfolio,tudominio.com
+idiomas,"Español nativo, Inglés B2"
+educacion,"Nombre de carrera — Universidad (año)"
+educacion,"Otra carrera — Otra universidad (año)"
+experiencia,"Puesto — Empresa: descripción breve de lo que hiciste"
+experiencia,"Otro puesto — Otra empresa: descripción breve"
+habilidades,"Skill 1, Skill 2, Skill 3"
+habilidades,"Otra categoría de habilidades"
+`;
+
+function downloadTemplate() {
+  const blob = new Blob([CSV_TEMPLATE], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'plantilla_cv.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ── Profile Form ──────────────────────────────────────────────────────────────
 
 function ProfileForm({ initial, onSave, onCancel }: {
@@ -207,6 +282,9 @@ function ProfileForm({ initial, onSave, onCancel }: {
   onSave: (p: UserProfile) => void;
   onCancel?: () => void;
 }) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importMsg, setImportMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
   const [form, setForm] = useState<Omit<UserProfile, 'id'>>({
     name: initial?.name ?? '',
     email: initial?.email ?? '',
@@ -222,6 +300,27 @@ function ProfileForm({ initial, onSave, onCancel }: {
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }));
 
+  const handleCSVImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const text = ev.target?.result as string;
+        const parsed = parseKeyValueCSV(text);
+        const filled = Object.keys(parsed).length;
+        if (filled === 0) throw new Error('No se encontraron campos reconocidos');
+        setForm(f => ({ ...f, ...parsed }));
+        setImportMsg({ type: 'ok', text: `✓ ${filled} campo${filled > 1 ? 's' : ''} importado${filled > 1 ? 's' : ''} desde el CSV` });
+      } catch (err) {
+        setImportMsg({ type: 'err', text: err instanceof Error ? err.message : 'Error al leer el CSV' });
+      }
+      // Reset input so same file can be re-imported
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+    reader.readAsText(file, 'UTF-8');
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSave({ ...form, id: initial?.id ?? crypto.randomUUID() });
@@ -232,6 +331,33 @@ function ProfileForm({ initial, onSave, onCancel }: {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
+
+      {/* CSV import banner */}
+      <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 space-y-2">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <p className="text-sm font-semibold text-indigo-700">Importar desde CSV</p>
+            <p className="text-xs text-indigo-500">Llena la plantilla y súbela — se autocompleta el formulario</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={downloadTemplate}
+              className="text-xs font-medium text-indigo-600 border border-indigo-200 bg-white hover:bg-indigo-50 px-3 py-1.5 rounded-lg transition">
+              ⬇ Plantilla
+            </button>
+            <button type="button" onClick={() => fileInputRef.current?.click()}
+              className="text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 rounded-lg transition">
+              📎 Importar CSV
+            </button>
+          </div>
+        </div>
+        {importMsg && (
+          <p className={`text-xs font-medium ${importMsg.type === 'ok' ? 'text-emerald-600' : 'text-red-500'}`}>
+            {importMsg.text}
+          </p>
+        )}
+        <input ref={fileInputRef} type="file" accept=".csv,text/csv" onChange={handleCSVImport} className="hidden" />
+      </div>
+
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-1.5">
           <label className="block text-sm font-medium text-slate-700">Nombre completo *</label>
@@ -504,10 +630,148 @@ function GoalsView({ profileId, onBack }: { profileId: string; onBack: () => voi
   );
 }
 
+// ── Landing page ─────────────────────────────────────────────────────────────
+
+const FEATURES = [
+  { icon: '📊', title: 'Análisis de afinidad', desc: 'Porcentaje de match con tu perfil, fortalezas y brechas en segundos.' },
+  { icon: '📝', title: 'Tips de CV', desc: 'Qué experiencias y proyectos resaltar para cada vacante específica.' },
+  { icon: '✉️', title: 'Carta de presentación', desc: 'Lista para enviar, en español o inglés, sin plantillas genéricas.' },
+  { icon: '🎯', title: 'Plan de desarrollo', desc: 'Ruta de capacitación personalizada para las vacantes que aspiras.' },
+];
+
+function LandingView({ profiles, onLogin, onRegister }: {
+  profiles: UserProfile[];
+  onLogin: () => void;
+  onRegister: () => void;
+}) {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white flex flex-col">
+
+      {/* Nav */}
+      <nav className="flex items-center justify-between px-6 py-4 max-w-5xl mx-auto w-full">
+        <div className="flex items-center gap-2">
+          <span className="text-indigo-400 text-xl">✦</span>
+          <span className="font-bold text-lg tracking-tight">Job Apply</span>
+        </div>
+        {profiles.length > 0 && (
+          <button onClick={onLogin}
+            className="text-sm font-medium text-slate-300 hover:text-white transition">
+            Iniciar sesión →
+          </button>
+        )}
+      </nav>
+
+      {/* Hero */}
+      <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-16 space-y-8 max-w-3xl mx-auto w-full">
+        <div className="inline-flex items-center gap-2 bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-semibold px-3 py-1.5 rounded-full">
+          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+          IA gratuita · Sin costos · Datos solo en tu dispositivo
+        </div>
+
+        <div className="space-y-4">
+          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight leading-tight">
+            Tu aplicación de empleo,{' '}
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400">
+              personalizada con IA
+            </span>
+          </h1>
+          <p className="text-slate-400 text-lg max-w-xl mx-auto leading-relaxed">
+            Pega la descripción de cualquier vacante y obtén análisis de afinidad, carta de presentación y tu plan de desarrollo — en segundos.
+          </p>
+        </div>
+
+        {/* CTAs */}
+        <div className="flex flex-col items-center gap-3">
+          <button onClick={onRegister}
+            className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-8 py-3.5 rounded-xl text-sm transition-all shadow-lg shadow-indigo-900/40 hover:shadow-indigo-900/60 hover:-translate-y-0.5">
+            Crear cuenta gratis
+          </button>
+          <button onClick={onLogin}
+            className="text-sm text-slate-400 hover:text-slate-200 transition">
+            ¿Ya tienes cuenta? <span className="underline underline-offset-2">Inicia sesión</span>
+          </button>
+        </div>
+
+        {/* Features grid */}
+        <div className="grid grid-cols-2 gap-4 w-full pt-4">
+          {FEATURES.map(f => (
+            <div key={f.title}
+              className="text-left p-5 rounded-2xl bg-white/5 border border-white/8 hover:bg-white/8 transition space-y-2">
+              <span className="text-2xl">{f.icon}</span>
+              <h3 className="font-semibold text-sm text-white">{f.title}</h3>
+              <p className="text-xs text-slate-400 leading-relaxed">{f.desc}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Footer */}
+      <footer className="text-center py-5 text-xs text-slate-600">
+        Los datos se guardan localmente en tu dispositivo · Sin servidores externos
+      </footer>
+    </div>
+  );
+}
+
+// ── Login / Profile selector ───────────────────────────────────────────────────
+
+const AVATAR_COLORS = [
+  ['#6366f1', '#eef2ff'], ['#8b5cf6', '#f5f3ff'], ['#ec4899', '#fdf2f8'],
+  ['#14b8a6', '#f0fdfa'], ['#f59e0b', '#fffbeb'], ['#ef4444', '#fef2f2'],
+];
+
+function LoginView({ profiles, onSelect, onNewProfile, onBack }: {
+  profiles: UserProfile[];
+  onSelect: (id: string) => void;
+  onNewProfile: () => void;
+  onBack: () => void;
+}) {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 flex flex-col items-center justify-center px-6 py-16 space-y-8">
+
+      <div className="text-center space-y-2">
+        <button onClick={onBack} className="text-xs text-slate-500 hover:text-slate-300 transition mb-4 block mx-auto">
+          ← Volver
+        </button>
+        <h2 className="text-2xl font-extrabold text-white">¿Quién eres?</h2>
+        <p className="text-slate-400 text-sm">Selecciona tu perfil para continuar</p>
+      </div>
+
+      <div className={`grid gap-4 w-full max-w-md ${profiles.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
+        {profiles.map((p, i) => {
+          const [bg, light] = AVATAR_COLORS[i % AVATAR_COLORS.length];
+          return (
+            <button key={p.id} onClick={() => onSelect(p.id)}
+              className="group flex flex-col items-center gap-3 p-6 rounded-2xl bg-white/5 border border-white/8 hover:bg-white/10 hover:border-white/20 transition-all hover:-translate-y-0.5">
+              <div className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-black transition-transform group-hover:scale-105"
+                style={{ background: `${bg}22`, color: bg, border: `2px solid ${bg}44` }}>
+                {p.name[0]?.toUpperCase()}
+              </div>
+              <div className="text-center">
+                <p className="font-semibold text-white text-sm">{p.name.split(' ')[0]}</p>
+                <p className="text-xs text-slate-500 truncate max-w-[120px]">{p.email}</p>
+              </div>
+            </button>
+          );
+        })}
+
+        {/* Add new profile card */}
+        <button onClick={onNewProfile}
+          className="flex flex-col items-center gap-3 p-6 rounded-2xl border border-dashed border-slate-700 hover:border-indigo-500 text-slate-500 hover:text-indigo-400 transition-all hover:-translate-y-0.5">
+          <div className="w-16 h-16 rounded-full flex items-center justify-center text-3xl border-2 border-dashed border-current">
+            +
+          </div>
+          <p className="text-sm font-medium">Nuevo perfil</p>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [view, setView] = useState<AppView>('analyze');
+  const [view, setView] = useState<AppView>('landing');
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [currentProfileId, setCurrentProfileId] = useState<string | null>(null);
   const [editingProfile, setEditingProfile] = useState(false);
@@ -547,12 +811,19 @@ export default function Home() {
     writeStorage(KEYS.profiles, updated);
     writeStorage(KEYS.currentProfile, p.id);
     setEditingProfile(false);
+    setNewProfileMode(false);
     setView('analyze');
   };
 
   const switchProfile = (id: string) => {
     setCurrentProfileId(id);
     writeStorage(KEYS.currentProfile, id);
+    setView('analyze');
+  };
+
+  const logout = () => {
+    setResult(null);
+    setView('landing');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -633,12 +904,39 @@ export default function Home() {
 
   if (!hydrated) return null;
 
+  // ── Landing ──
+  if (view === 'landing') {
+    return (
+      <LandingView
+        profiles={profiles}
+        onLogin={() => setView(profiles.length > 0 ? 'login' : 'profile')}
+        onRegister={() => { setNewProfileMode(true); setView('profile'); }}
+      />
+    );
+  }
+
+  // ── Login / profile selector ──
+  if (view === 'login') {
+    return (
+      <LoginView
+        profiles={profiles}
+        onSelect={switchProfile}
+        onNewProfile={() => { setNewProfileMode(true); setView('profile'); }}
+        onBack={() => setView('landing')}
+      />
+    );
+  }
+
   // ── Profile setup (first time or editing) ──
-  if (noProfile || editingProfile || newProfileMode) {
+  if (noProfile || editingProfile || newProfileMode || view === 'profile') {
     return (
       <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 py-10 px-4">
         <div className="max-w-2xl mx-auto space-y-6">
           <header className="text-center space-y-1">
+            <button onClick={() => setView('landing')}
+              className="text-sm text-slate-400 hover:text-slate-600 transition mb-2 inline-block">
+              ← Volver al inicio
+            </button>
             <h1 className="text-2xl font-extrabold text-slate-900">
               {noProfile ? 'Crea tu perfil' : 'Editar perfil'}
             </h1>
@@ -679,7 +977,7 @@ export default function Home() {
           <div className="space-y-1">
             <div className="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-100 text-indigo-600 text-xs font-semibold px-3 py-1.5 rounded-full">
               <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
-              Powered by Ollama · 100% local
+              IA gratuita · Sin costos
             </div>
             <h1 className="text-2xl font-extrabold text-slate-900">Job Apply Assistant</h1>
           </div>
@@ -689,6 +987,10 @@ export default function Home() {
             <button onClick={() => setView('goals')}
               className="text-xs font-medium text-slate-500 hover:text-indigo-600 px-3 py-2 rounded-lg hover:bg-indigo-50 transition">
               🎯 Mis metas
+            </button>
+            <button onClick={logout}
+              className="text-xs font-medium text-slate-400 hover:text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-100 transition">
+              Salir
             </button>
             <div className="relative group">
               <button className="flex items-center gap-2 text-xs font-semibold text-slate-700 border border-slate-200 px-3 py-2 rounded-lg hover:bg-slate-50 transition">
